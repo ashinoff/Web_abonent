@@ -123,12 +123,33 @@ html:has(dialog[open]){overflow:hidden}
 dialog.swiping{user-select:none;transition:none}
 .dialog-header:before{content:"";position:absolute;left:50%;top:7px;width:34px;height:4px;margin-left:-17px;background:#c8d4e2;border-radius:4px}
 .dialog-header{position:relative}
-#other-files{font-size:13px;color:#627995;line-height:1.6}
-#other-files summary{cursor:pointer;padding:8px 0}
-#other-files-count{margin-left:6px;font-weight:600}
-#other-files-list{padding-left:19px;margin:5px 0;overflow-wrap:anywhere}
-#other-files-list li{margin-bottom:8px}
-#other-files-list li span{display:block;color:#8795a7;font-size:12px}
+/* File inspection and manual source selection live in Settings. */
+.source-files-heading,.source-file-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.source-files-heading h3{margin:0}
+.source-file-cards{display:grid;gap:12px}
+.source-file{border:1px solid #dce5ef;background:#f8fafc;border-radius:12px;padding:15px;min-width:0}
+.source-file-heading h4{font-size:14px;font-weight:650;margin:0;color:#24496c}
+.choose-source{font-size:12px;min-height:40px;padding:8px 10px;white-space:nowrap}
+.source-file-name{display:block;font-size:14px;font-weight:600;margin-top:12px;overflow-wrap:anywhere;line-height:1.45;color:#63788f}
+.source-file[data-state="ready"] .source-file-name{color:#377658}
+.source-file[data-state="error"] .source-file-name,.source-file[data-state="missing"] .source-file-name{color:#a9535f}
+.source-file-meta{font-size:12px;line-height:1.6;color:#72849a;margin:5px 0;overflow-wrap:anywhere}
+.source-file-status{font-size:12px;line-height:1.6;color:#627b8f;margin:7px 0 0;overflow-wrap:anywhere}
+.source-file[data-state="error"] .source-file-status,.source-file[data-state="missing"] .source-file-status{color:#9b5860}
+.source-file[data-state="checking"] .source-file-status{color:#426f9c}
+.manual-source{border-top:1px solid #dce5ef;margin-top:14px;padding-top:12px}
+.manual-source label{display:block;color:#647b96;font-size:12px;margin-bottom:7px}
+.manual-source select{width:100%;max-width:100%;min-width:0;border:1px solid #cad9e8;border-radius:8px;background:#fff;color:#24496c;padding:10px;font-size:16px;min-height:44px}
+.manual-source-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.manual-source-actions .secondary{min-height:42px;font-size:13px}
+.manual-source-actions .text-button{font-size:12px;min-height:42px}
+.folder-contents{font-size:13px;color:#627995;line-height:1.6;margin-top:14px}
+.folder-contents summary{cursor:pointer;padding:10px 0}
+.folder-contents summary span{margin-left:6px;font-weight:600}
+.folder-contents ul{list-style:none;padding:0;margin:0}
+.folder-contents li{padding:10px 0;border-top:1px solid #e3eaf3;overflow-wrap:anywhere}
+.folder-contents li strong{display:block;font-size:13px;font-weight:500;color:#365675}
+.folder-contents li span{display:block;color:#798ba0;font-size:12px}
 @media(max-width:700px){
  .registry-dialog.full-screen-dialog{width:100%;height:100dvh;max-height:100dvh;margin:0;inset:0;border-radius:0}
  .registry-dialog .dialog-header h2{font-size:23px}
@@ -148,8 +169,6 @@ dialog.swiping{user-select:none;transition:none}
 .contour-button:disabled{opacity:1;background:#eef2f4;color:#70818e;border:1px solid #dce4e9;cursor:default}
 .contour-button>svg{flex:0 0 20px}
 .contour-button .soon-badge{background:#f9fbfc;color:#768793}
-#source-name[data-state="missing"]{color:#a9535f}
-#source-name[data-state="ready"]{color:#377658}
 .analysis-button:disabled{background:#faeadb;border-color:#ecd4be;color:#91613b;box-shadow:none}
 .analysis-button .soon-badge{background:#fff7ee;color:#9b7556}
 

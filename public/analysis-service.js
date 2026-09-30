@@ -62,7 +62,7 @@ export function createAnalysisService(model, records = []) {
   }
   function resolveAccount(value) {
     const key = idKey(value), choices = model.aliases.get(key);
-    if (!choices?.size) throw new Error(`ЛС ${value} не найден в «ПО по месячно». Проверьте номер договора и выбранную РЭС.`);
+    if (!choices?.size) throw new Error(`ЛС ${value} не найден в файле потребления. Проверьте номер договора и выбранную РЭС.`);
     if (choices.size > 1) throw new Error('Этот номер СТЕК соответствует нескольким договорам. Уточните основной ЛС в исходной выгрузке.');
     return [...choices][0];
   }
@@ -79,7 +79,7 @@ export function createAnalysisService(model, records = []) {
     },
     contour(tp, settings) {
       const key = tpKey(tp), group = tpRows.get(key);
-      if (!group) throw new Error(`ТП ${tp} не найдена в файле потребления. Проверьте столбец «ТП» в «ПО по месячно».`);
+      if (!group) throw new Error(`ТП ${tp} не найдена в файле потребления. Проверьте столбец «ТП» в файле потребления.`);
       const results = run('contour:' + key, settings).results.filter(r => r.meter.tp === 'tp:' + key);
       const values = strictSum(group.rows, model.months.length);
       const flags = new Map(); for (const r of results) for (const f of r.flags) { const old = flags.get(f.code) || { code: f.code, title: f.title, count: 0 }; old.count++; flags.set(f.code, old); }
