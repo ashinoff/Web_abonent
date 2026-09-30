@@ -2,6 +2,29 @@ import { clean, norm, idKey, columnName } from './core.js';
 
 const MONTHS = ['январ', 'феврал', 'март', 'апрел', 'ма[йя]', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
 export const tpKey = value => norm(value).replace(/[‐‑–—]/g, '-').replace(/\s+/g, '');
+// A STEK identifier alone does not distinguish all TUs in these exports.
+// Keep the local TU number and its name instead of discarding them as fallbacks.
+const pointParts = row => [idKey(row.pointNumber), idKey(row.point), norm(row.pointName)];
+export function pointKey(row) {
+  const parts = pointParts(row);
+  return parts.some(Boolean) ? JSON.stringify(parts) : '';
+}
+export function accountPointKey(row) {
+  const point = pointKey(row);
+  return point ? JSON.stringify([row.accountKey || idKey(row.account), point]) : '';
+}
+export function samePoint(a, b) {
+  const left = pointParts(a), right = pointParts(b);
+  const shared = left.map((value, i) => value && right[i] ? i : -1).filter(i => i >= 0);
+  return shared.length > 0 && shared.every(i => left[i] === right[i]);
+}
+export function selectPointRows(rows, selector) {
+  if (!pointKey(selector)) throw new Error('В карточке не указана ТУ. Проверьте столбцы «ТУ», «Номер ТУ» и «Номер ТУСТЕК» в реестре.');
+  const matches = rows.filter(row => samePoint(row, selector));
+  if (!matches.length) throw new Error('Связка ЛС + ТУ не найдена в файле потребления. Проверьте номер и наименование ТУ в обоих файлах.');
+  if (new Set(matches.map(pointKey)).size > 1) throw new Error('Этому ЛС и данным ТУ соответствуют несколько точек. Уточните номер или наименование ТУ в реестре.');
+  return matches;
+}
 export function numeric(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   const s = clean(value).replace(/[\s\u202f]/g, '').replace(/−/g, '-').replace(',', '.');
@@ -41,7 +64,7 @@ export function parseMonthlyMatrix(matrix, { sheet = 'Лист1', worksheet = nu
   });
   if (period && period[1].y * 12 + period[1].m !== start + cols.length - 1) throw new Error('Количество месячных столбцов не совпадает с периодом в заголовке.');
   const find = rx => header.findIndex(v => rx.test(norm(v)));
-  const c = { account: header.findIndex(accountHeader), alias: find(/^лицевой счет стек$/), point: find(/^номер точки учета стек$/), pointOther: find(/^№\s*ту$/), name: find(/^наименование договора$/), pointName: find(/^фио\s*\/\s*наименование точки учета$/), tp: find(/^тп$/), zone: find(/^тарифная зона$/), off: find(/^откл$/) };
+  const c = { account: header.findIndex(accountHeader), alias: find(/^лицевой счет стек$/), point: find(/^(номер точки учета стек|номер ту\s*стек)$/), pointNumber: find(/^(№\s*ту|номер ту)$/), name: find(/^наименование договора$/), pointName: find(/^(фио\s*\/\s*наименование точки учета|ту|наименование ту|наименование точки учета)$/), tp: find(/^тп$/), zone: find(/^тарифная зона$/), off: find(/^откл$/) };
   const rows = [], warnings = []; let invalid = 0, totalsMismatch = 0;
   const totalCol = find(/^всего.*по/);
   function identifier(row, r, col) {
@@ -67,7 +90,7 @@ export function parseMonthlyMatrix(matrix, { sheet = 'Лист1', worksheet = nu
     });
     const total = numeric(row[totalCol]);
     if (total != null && values.every(v => v != null) && Math.abs(total - values.reduce((s, v) => s + v, 0)) > 0.05) totalsMismatch++;
-    rows.push({ account, accountKey: idKey(account), alias: identifier(row, r, c.alias), point: identifier(row, r, c.point) || identifier(row, r, c.pointOther), name: clean(row[c.name]), pointName: clean(row[c.pointName]), tp: clean(row[c.tp]), zone: clean(row[c.zone]), off: clean(row[c.off]), values, source: `${sheet}:${r + 1}` });
+    rows.push({ account, accountKey: idKey(account), alias: identifier(row, r, c.alias), point: identifier(row, r, c.point), pointNumber: identifier(row, r, c.pointNumber), name: clean(row[c.name]), pointName: clean(row[c.pointName]), tp: clean(row[c.tp]), zone: clean(row[c.zone]), off: clean(row[c.off]), values, source: `${sheet}:${r + 1}` });
   }
   if (!rows.length) throw new Error('Нет строк с лицевыми счетами.');
   if (!rows.some(r => r.values.some(v => v != null))) throw new Error('Нет числовых месячных объёмов потребления.');
@@ -100,15 +123,16 @@ export function readMonthlyWorkbook(buffer, XLSX) {
   result.warnings.push(...errors);
   return result;
 }
-// Only literal repeats of a point + tariff row are collapsed. Different tariff
-// rows are additive; ambiguous equal identities are blocked instead of doubled.
+// Collapse equal LS + TU + TP + tariff rows only. Distinct TUs under one LS
+// remain independent even when they share the same STEK identifier.
 export function indexMonthly(parsed) {
   const unique = new Map(), accounts = new Map(), aliases = new Map(); let duplicates = 0;
   for (const row of parsed.rows) {
-    const identity = row.point ? [row.accountKey, row.point, tpKey(row.tp), norm(row.zone)].join('|') : null;
+    const tu = accountPointKey(row);
+    const identity = tu ? JSON.stringify([tu, tpKey(row.tp), norm(row.zone)]) : null;
     if (identity && unique.has(identity)) {
       const old = unique.get(identity);
-      if (JSON.stringify(old.values) !== JSON.stringify(row.values)) throw new Error(`У ЛС ${row.account} повторяется точка ${row.point} с разными объёмами (${old.source}, ${row.source}). Устраните дубли в выгрузке.`);
+      if (JSON.stringify(old.values) !== JSON.stringify(row.values)) throw new Error(`У ЛС ${row.account} повторяется одна и та же ТУ «${[row.pointNumber, row.pointName, row.point && 'СТЕК ' + row.point].filter(Boolean).join(' · ')}» с разными объёмами (${old.source}, ${row.source}). Проверьте эти строки выгрузки.`);
       duplicates++; continue;
     }
     if (identity) unique.set(identity, row);

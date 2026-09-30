@@ -24,7 +24,7 @@ self.onmessage = async ({ data }) => {
     }
     if (['analysisConsumer', 'analysisTP', 'analysisTPs'].includes(action)) {
       if (!analysisService) throw new Error('Файл потребления не загружен.');
-      const result = action === 'analysisConsumer' ? analysisService.consumer(payload.account, payload.settings, payload.tp) : action === 'analysisTP' ? analysisService.contour(payload.tp, payload.settings) : analysisService.tps();
+      const result = action === 'analysisConsumer' ? analysisService.consumer(payload.account, payload.settings, payload.tp, payload.point) : action === 'analysisTP' ? analysisService.contour(payload.tp, payload.settings) : analysisService.tps();
       self.postMessage({ id, result }); return;
     }
     if (action === 'analysisRecords') { self.postMessage({ id, result: (index?.records || []).map(({ fields }) => ({ fields })) }); return; }
