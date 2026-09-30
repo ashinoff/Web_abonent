@@ -24,12 +24,18 @@
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 6-7 11-7 11S5 16 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 4 8 8-8 8"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 3v17h17M8 15l4-5 4 2 5-7"/></symbol>
   </svg>
   <header class="topbar">
     <div class="header-inner">
       <a class="brand" href="./" aria-label="РОССЕТИ — Кубаньэнерго, главная"><img class="brand-logo" src="./rosseti-logo.svg" alt="РОССЕТИ" width="280" height="88"><span class="brand-caption">КУБАНЬЭНЕРГО</span></a>
       <span class="header-note">Рабочий реестр</span>
       <button class="settings-button" id="settings-open" aria-label="Настройки"><svg><use href="#i-settings"/></svg><span>Настройки</span></button>
+    </div>
+    <div class="source-indicators" aria-label="Источники данных">
+      <button type="button" class="source-indicator" id="disk-indicator" data-state="checking" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Яндекс</span><span class="sr-only" id="disk-indicator-label">Проверяем подключение</span></button>
+      <button type="button" class="source-indicator" id="registry-indicator" data-state="idle" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Реестр</span><span class="sr-only" id="registry-indicator-label">Предприятие не выбрано</span></button>
+      <button type="button" class="source-indicator" id="consumption-indicator" data-state="idle" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Потребление</span><span class="sr-only" id="consumption-indicator-label">Предприятие не выбрано</span></button>
     </div>
   </header>
   <main class="workspace">
@@ -44,7 +50,7 @@
           <button class="primary search-submit" type="submit" id="search-submit"><svg><use href="#i-search"/></svg>Найти</button>
           <div id="form-message" class="form-message" role="status" hidden></div>
         </form>
-        <div class="source-card" id="source-card"><div class="source-icon"><svg><use href="#i-file"/></svg></div><div class="source-copy"><strong id="source-name">Реестр не подключён</strong><span id="source-meta">Выберите предприятие в настройках</span></div><button class="icon-button" id="refresh" title="Обновить реестр" aria-label="Обновить реестр" hidden><svg><use href="#i-refresh"/></svg></button></div>
+        <div class="source-card" id="source-card"><div class="source-icon"><svg><use href="#i-file"/></svg></div><div class="source-copy"><strong id="source-name">Реестр не подключён</strong><span id="source-meta">Выберите предприятие</span></div><button class="icon-button" id="refresh" title="Обновить реестр" aria-label="Обновить реестр" hidden><svg><use href="#i-refresh"/></svg></button></div>
         <div id="demo-banner" class="demo-banner" hidden><span>Демонстрация · вымышленные данные</span><button id="demo-exit" type="button">Выйти</button></div>
         <div id="example-queries" class="example-queries" hidden><span>Попробуйте</span><button data-query="00123456" data-field="meter">ПУ 00123456</button><button data-query="00000001001" data-field="account">ЛС 00000001001</button></div>
         <div class="desktop-footnote"><svg><use href="#i-bolt"/></svg><p>Вся строка реестра —<br>в одной карточке</p></div>
@@ -57,11 +63,15 @@
     </div>
     <footer class="page-footer"><span>РОССЕТИ <span class="footer-slash">/</span> КУБАНЬЭНЕРГО</span><span>Данные из вашего реестра</span></footer>
   </main>
-  <dialog id="settings-dialog" class="settings-dialog">
-    <div class="dialog-header"><div><span class="eyebrow">РАБОЧАЯ ОБЛАСТЬ</span><h2>Настройки</h2></div><button class="icon-button close-dialog" aria-label="Закрыть настройки"><svg><use href="#i-close"/></svg></button></div>
+  <dialog id="enterprise-dialog" class="enterprise-dialog full-screen-dialog" aria-labelledby="enterprise-title">
+    <div class="dialog-header"><h2 id="enterprise-title">Предприятие электрических сетей</h2><button class="icon-button close-dialog" aria-label="Закрыть выбор предприятия"><svg><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body enterprise-body"><div id="folder-list" class="choice-list" aria-live="polite"></div></div>
+  </dialog>
+  <dialog id="settings-dialog" class="settings-dialog full-screen-dialog" aria-labelledby="settings-title">
+    <div class="dialog-header"><div><span class="eyebrow">РАБОЧАЯ ОБЛАСТЬ</span><h2 id="settings-title">Настройки</h2></div><button class="icon-button close-dialog" aria-label="Закрыть настройки"><svg><use href="#i-close"/></svg></button></div>
     <div class="dialog-body">
-      <div id="pinned-source" class="pinned-source" hidden><svg><use href="#i-folder"/></svg><span>Общая папка Яндекс Диска</span><span class="tag">Подключена</span></div><p id="source-setup-message" class="hint" role="status">Подключаем общую папку…</p>
-      <div class="setting-section folder-section"><h3>Предприятие электрических сетей</h3><p class="hint">Названия предприятий считываются из папок на Яндекс Диске. Выберите своё — реестр абонентов откроется автоматически.</p><p class="hint">Файл «Потребление» пока не используется. Если реестров несколько, откроется самый свежий.</p><div id="folder-list" class="choice-list"><p class="hint">Загружаем предприятия…</p></div><button id="read-folders" class="secondary full-width" disabled><svg><use href="#i-refresh"/></svg>Обновить список предприятий</button></div>
+      <section class="setting-section"><h3>Источники данных</h3><dl class="source-details"><div><dt>Яндекс Диск</dt><dd id="disk-detail">Проверяем подключение…</dd></div><div><dt>Предприятие</dt><dd id="enterprise-detail">Не выбрано</dd></div><div><dt>Реестр абонентов</dt><dd id="registry-detail">Не загружен</dd></div><div><dt>Файл потребления</dt><dd id="consumption-detail">Сначала выберите предприятие</dd></div></dl><p id="source-setup-message" class="hint" role="status"></p><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Проверить подключение и обновить</button></section>
+      <section class="setting-section"><h3>Чтение файлов</h3><p class="hint">Ссылка на общую папку задаётся администратором в Амвере. Названия предприятий читаются из вложенных папок.</p><p class="hint">Для поиска используется самый свежий реестр Excel. Файл «Потребление» определяется отдельно; его анализ будет подключён на следующем этапе.</p></section>
       <div class="setting-section" id="mapping-section" hidden><h3>Проверьте столбцы</h3><p class="hint">Убедитесь, что приложение правильно определило номера ПУ и лицевых счетов.</p><div id="mapping-fields"></div><div id="mapping-warning" class="notice" hidden></div><button id="confirm-mapping" class="primary full-width">Использовать реестр</button></div>
       <div id="settings-message" class="form-message" role="status" hidden></div>
       <div class="local-source"><div><strong>Excel на устройстве</strong><p class="hint">Открыть файл для поиска на этом устройстве.</p></div><label class="secondary file-upload"><svg><use href="#i-file"/></svg>Выбрать файл<input id="local-file" type="file" accept=".xlsx,.xls,.xlsm,.csv" class="sr-only"></label></div>

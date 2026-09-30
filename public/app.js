@@ -1,6 +1,6 @@
 import { clean } from './core.js';
 import { demo } from './demo.js';
-import { newestRegistry } from './source.js';
+import { newestRegistry, newestConsumption } from './source.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -10,7 +10,8 @@ const recordsText = n => `${number(n)} ${n % 100 >= 11 && n % 100 <= 14 ? 'за�
 const formatDate = value => value ? new Date(value).toLocaleDateString('ru-RU') : '';
 const initial = window.ABONENT_CONFIG || {};
 let config = { ...initial }, proxy = false, folders = [], selectedFolder = null, selectedFile = null;
-let sourceState = 'loading';
+let sourceState = 'loading', diskState = 'checking', directoryState = 'loading', folderRead = null;
+let consumptionFile = null, consumptionState = 'idle', registryState = 'idle', busyText = '';
 let summary = null, pending = null, currentSource = null, isDemo = false, busy = false, operation = 0;
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 const requests = new Map();
@@ -40,28 +41,51 @@ function rpc(action, payload = {}, transfer = []) {
 function message(target, value, loading = false) { const el = $(target); el.textContent = value; el.hidden = !value; el.classList.toggle('loading', loading); }
 function toast(value) { $('#toast').textContent = value; $('#toast').hidden = false; setTimeout(() => { $('#toast').hidden = true; }, 3000); }
 function setBusy(value, text = '') {
-  busy = value;
-  for (const sel of ['#confirm-mapping', '#local-file']) $(sel).disabled = value;
-  $('#read-folders').disabled = value || sourceState === 'loading' || sourceState === 'missing';
+  busy = value; busyText = text;
+  for (const sel of ['#confirm-mapping', '#local-file', '#search-submit']) $(sel).disabled = value;
+  $('#read-folders').disabled = value || sourceState === 'loading' || directoryState === 'loading';
   document.querySelectorAll('.choice-item').forEach(el => { el.disabled = value; });
   $('#refresh').disabled = value;
   if (text || !value) message('#settings-message', text, value);
+  updateSource(); renderIndicators(); renderResults();
 }
-function showSettings() {
-  if (!$('#settings-dialog').open) $('#settings-dialog').showModal();
-  if (!folders.length && sourceState === 'ready' && !busy && !pending) readFolders();
+function openDialog(id) {
+  for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog.id !== id) dialog.close();
+  const dialog = $('#' + id);
+  if (!dialog.open) dialog.showModal();
+}
+function showSettings() { renderIndicators(); openDialog('settings-dialog'); }
+function showEnterprises() {
+  openDialog('enterprise-dialog'); renderFolders();
+  if (sourceState !== 'loading' && directoryState !== 'ready' && !busy) readFolders();
 }
 function rootUrl() { return clean(config.publicUrl); }
+function renderIndicators() {
+  const diskText = diskState === 'connected' ? 'Общая папка доступна' : diskState === 'checking' ? 'Проверяем подключение…' : sourceState === 'missing' ? 'Общая папка не подключена' : 'Не удалось прочитать папку';
+  const registryText = registryState === 'ready' ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : registryState === 'error' ? pending ? 'Подтвердите столбцы в настройках' : 'Реестр не загружен' : 'Сначала выберите предприятие';
+  const consumptionText = consumptionState === 'found' ? 'Найден: ' + consumptionFile.name : consumptionState === 'checking' ? 'Ищем файл в папке предприятия…' : consumptionState === 'missing' ? 'Файл «Потребление» не найден' : consumptionState === 'error' ? 'Не удалось проверить наличие файла' : 'Сначала выберите предприятие';
+  for (const [name, state, label] of [
+    ['disk', diskState === 'connected' ? 'on' : diskState === 'checking' ? 'checking' : 'off', diskText],
+    ['registry', registryState === 'ready' ? 'on' : registryState === 'checking' ? 'checking' : registryState === 'idle' ? 'idle' : 'off', registryText],
+    ['consumption', consumptionState === 'found' ? 'on' : consumptionState === 'checking' ? 'checking' : consumptionState === 'idle' ? 'idle' : 'off', consumptionText],
+  ]) {
+    const indicator = $('#' + name + '-indicator');
+    indicator.dataset.state = state; indicator.title = label;
+    $('#' + name + '-indicator-label').textContent = label;
+  }
+  $('#disk-detail').textContent = diskText;
+  $('#enterprise-detail').textContent = selectedFolder?.name || 'Не выбрано';
+  $('#registry-detail').textContent = currentSource?.type === 'local' ? currentSource.name + ' · с устройства' : currentSource?.type === 'demo' ? 'Демонстрационный реестр' : (selectedFile ? selectedFile.name + ' · ' : '') + registryText;
+  $('#consumption-detail').textContent = consumptionText;
+}
 function renderSourceState() {
-  const ready = sourceState === 'ready';
-  $('#pinned-source').hidden = !ready;
-  $('#source-setup-message').hidden = ready;
-  $('#source-setup-message').textContent = sourceState === 'loading' ? 'Подключаем общую папку…' : sourceState === 'error' ? 'Не удалось получить настройки источника. Проверьте соединение и повторите.' : 'Общая папка ещё не подключена. Обратитесь к администратору приложения.';
-  $('#folder-list').innerHTML = '<p class="hint">' + (ready ? 'Загружаем предприятия…' : 'Предприятия появятся после подключения общей папки.') + '</p>';
-  $('#read-folders').disabled = busy || sourceState === 'loading' || sourceState === 'missing';
+  const text = sourceState === 'loading' ? 'Получаем настройки общей папки…' : sourceState === 'error' ? 'Не удалось получить настройки источника. Проверьте соединение и повторите.' : sourceState === 'missing' ? 'Общая папка ещё не подключена. Администратору нужно указать ссылку в переменной YANDEX_PUBLIC_URL в Амвере.' : '';
+  message('#source-setup-message', text);
+  $('#read-folders').disabled = busy || sourceState === 'loading' || directoryState === 'loading';
+  renderIndicators(); renderFolders();
 }
 async function readConfiguration() {
-  sourceState = 'loading'; renderSourceState();
+  sourceState = 'loading'; diskState = 'checking'; renderSourceState();
   try {
     const response = await fetch(new URL('./api/config', location.href), { signal: AbortSignal.timeout(10000), cache: 'no-store' });
     if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
@@ -74,6 +98,7 @@ async function readConfiguration() {
     sourceState = rootUrl() ? 'ready' : 'missing';
     if (rootUrl()) validateRoot(rootUrl());
   } catch { sourceState = 'error'; }
+  if (sourceState !== 'ready') { diskState = 'disconnected'; directoryState = 'error'; consumptionFile = null; consumptionState = selectedFolder ? 'error' : 'idle'; registryState = selectedFolder ? 'error' : 'idle'; }
   renderSourceState();
 }
 function validateRoot(value) {
@@ -109,36 +134,78 @@ async function listFolder(path) {
   return all;
 }
 function renderFolders() {
-  $('#folder-list').innerHTML = folders.length ? folders.map((f, i) => `<button type="button" class="choice-item ${selectedFolder?.path === f.path ? 'selected' : ''}" data-folder="${i}">${icon('folder')}<span>${esc(f.name)}</span><i class="choice-dot" aria-hidden="true"></i></button>`).join('') : '<p class="hint">В общей папке пока нет предприятий. Добавьте на Яндекс Диск папки с их названиями.</p>';
+  const list = $('#folder-list');
+  if (sourceState === 'loading' || directoryState === 'loading') {
+    list.setAttribute('aria-busy', 'true');
+    list.innerHTML = '<div class="enterprise-loading" role="status"><span class="loading-indicator" aria-hidden="true"></span><span>Загружаем предприятия…</span><div class="loading-bar" aria-hidden="true"></div></div>';
+    return;
+  }
+  list.setAttribute('aria-busy', 'false');
+  if (sourceState !== 'ready' || directoryState === 'error') {
+    list.innerHTML = '<div class="enterprise-empty"><p>Не удалось загрузить список предприятий.</p><button type="button" class="secondary" data-open-settings>Проверить подключение</button></div>';
+    return;
+  }
+  list.innerHTML = folders.length ? folders.map((f, i) => `<button type="button" class="choice-item ${selectedFolder?.path === f.path ? 'selected' : ''}" data-folder="${i}" aria-pressed="${selectedFolder?.path === f.path}" ${busy ? 'disabled' : ''}><span>${esc(f.name)}</span><i class="choice-dot" aria-hidden="true"></i></button>`).join('') : '<div class="enterprise-empty"><p>Предприятия пока не найдены.</p></div>';
 }
 async function readFolders() {
-  if (busy) return;
-  if (sourceState !== 'ready') { await readConfiguration(); if (sourceState !== 'ready') return; }
-  try {
-    const root = validateRoot(rootUrl());
-    if (prefs.root !== root) { clearDataset(); folders = []; selectedFolder = null; selectedFile = null; prefs = { root }; savePrefs(); }
-    setBusy(true, 'Загружаем список предприятий…');
-    folders = (await listFolder('/')).filter(f => f.type === 'dir').sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-    renderFolders(); setBusy(false);
-  } catch (error) { setBusy(false); message('#settings-message', error.message); }
+  if (folderRead) return folderRead;
+  if (busy) return false;
+  folderRead = (async () => {
+    if (sourceState !== 'ready') { await readConfiguration(); if (sourceState !== 'ready') return false; }
+    directoryState = 'loading'; diskState = 'checking'; renderSourceState();
+    try {
+      const root = validateRoot(rootUrl());
+      if (prefs.root !== root) { folders = []; selectedFolder = null; selectedFile = null; consumptionFile = null; consumptionState = 'idle'; registryState = 'idle'; clearDataset(); prefs = { root }; savePrefs(); }
+      folders = (await listFolder('/')).filter(f => f.type === 'dir').sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+      directoryState = 'ready'; diskState = 'connected';
+      if (!selectedFolder) { consumptionFile = null; consumptionState = 'idle'; registryState = 'idle'; }
+      return true;
+    } catch (error) {
+      directoryState = 'error'; diskState = 'disconnected'; consumptionFile = null; consumptionState = selectedFolder ? 'error' : 'idle'; registryState = selectedFolder ? 'error' : 'idle';
+      message('#settings-message', error.message);
+      return false;
+    } finally { renderSourceState(); }
+  })();
+  try { return await folderRead; } finally { folderRead = null; }
+}
+async function refreshSources() {
+  if (busy || folderRead) return;
+  message('#settings-message', '');
+  await readConfiguration();
+  if (sourceState !== 'ready' || !await readFolders()) return;
+  const folder = folders.find(f => f.path === selectedFolder?.path || f.path === prefs.folder?.path);
+  if (folder) await openFolder(folder);
+  else if (selectedFolder || prefs.folder) {
+    clearDataset(); selectedFolder = null; selectedFile = null; consumptionFile = null; consumptionState = 'idle'; registryState = 'idle';
+    prefs = { root: rootUrl() }; savePrefs(); updateSource(); renderIndicators();
+    message('#settings-message', 'Выбранное предприятие больше не найдено. Выберите другое на главном экране.');
+  }
 }
 async function selectFolder(i) {
   if (busy || !folders[i]) return;
+  $('#enterprise-dialog').close();
   await openFolder(folders[i]);
 }
 async function openFolder(folder) {
   if (busy) return;
   clearDataset();
-  selectedFolder = folder; selectedFile = null;
+  selectedFolder = folder; selectedFile = null; consumptionFile = null; consumptionState = 'checking'; registryState = 'checking'; diskState = 'checking';
+  if (prefs.folder?.path !== folder.path || prefs.root !== rootUrl()) prefs = { root: rootUrl() };
+  prefs.folder = { name: folder.name, path: folder.path }; savePrefs();
   renderFolders();
+  let listed = false;
   try {
     setBusy(true, 'Читаем реестры предприятия…');
-    // One directory is one working area. Files in deeper folders are not silently combined.
-    selectedFile = newestRegistry(await listFolder(selectedFolder.path));
+    const items = await listFolder(folder.path); listed = true; diskState = 'connected';
+    consumptionFile = newestConsumption(items); consumptionState = consumptionFile ? 'found' : 'missing';
+    selectedFile = newestRegistry(items);
     setBusy(false);
-    if (!selectedFile) { message('#settings-message', 'Реестр абонентов не найден. Добавьте Excel в папку предприятия. Файл «Потребление» в поиске не используется.'); return; }
+    if (!selectedFile) { registryState = 'error'; renderIndicators(); message('#settings-message', 'Реестр абонентов не найден. Добавьте Excel в папку предприятия. Файл «Потребление» в поиске не используется.'); showSettings(); return; }
     await downloadFile();
-  } catch (error) { setBusy(false); message('#settings-message', error.message); }
+  } catch (error) {
+    if (!listed) { diskState = 'disconnected'; consumptionFile = null; consumptionState = selectedFolder ? 'error' : 'idle'; registryState = selectedFolder ? 'error' : 'idle'; }
+    setBusy(false); message('#settings-message', error.message); showSettings();
+  }
 }
 async function boundedBuffer(response) {
   const max = (config.maxFileMB || 40) * 1048576;
@@ -170,7 +237,7 @@ async function downloadFile() {
     }
     const buffer = await boundedBuffer(response);
     await loadBuffer(buffer, { name: file.name, folder: folder.name, modified: file.modified, type: 'disk', root: rootUrl(), folderInfo: folder, fileInfo: file });
-  } catch (error) { setBusy(false); message('#settings-message', error.message); }
+  } catch (error) { registryState = 'error'; setBusy(false); message('#settings-message', error.message); showSettings(); }
 }
 function clearDataset() {
   operation++; searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
@@ -188,7 +255,7 @@ async function loadBuffer(buffer, source) {
   } else if (source.type === 'disk' && !data.skipped.length && data.sheets.every(s => !s.layout.flattened && s.layout.mapping.meter !== undefined && s.layout.mapping.account !== undefined)) {
     const overrides = Object.fromEntries(data.sheets.map(s => [s.sheet, { meter: s.layout.mapping.meter, account: s.layout.mapping.account }]));
     await confirmMapping(overrides, true);
-  } else { renderMapping(); setBusy(false); $('#mapping-section').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  } else { if (source.type === 'disk') registryState = 'error'; renderMapping(); setBusy(false); renderResults(); showSettings(); $('#mapping-section').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 function signature(data) { return JSON.stringify(data.sheets.map(s => [s.sheet, s.layout.labels])); }
 function renderMapping() {
@@ -217,15 +284,16 @@ async function confirmMapping(savedOverrides, automatic = false) {
       prefs = { root: currentSource.root, folder: { name: currentSource.folderInfo.name, path: currentSource.folderInfo.path }, file: { name: currentSource.fileInfo.name, path: currentSource.fileInfo.path }, mappingSignature: signature(pending), overrides };
       savePrefs();
     }
+    registryState = currentSource.type === 'disk' ? 'ready' : 'idle';
     pending = null; $('#mapping-section').hidden = true; setBusy(false); updateSource(); renderResults();
     $('#settings-dialog').close(); toast(`Реестр готов: ${recordsText(summary.count)}`);
     if (data.skipped.length) message('#form-message', `Пропущено листов: ${data.skipped.length}. ${data.skipped.map(s => s.sheet + ': ' + s.error).join(' ')}`);
-  } catch (error) { setBusy(false); message('#settings-message', error.message); }
+  } catch (error) { if (pending?.source.type === 'disk') registryState = 'error'; setBusy(false); message('#settings-message', error.message); showSettings(); }
 }
 async function startDemo() {
   if (busy) return;
   try {
-    clearDataset(); setBusy(true); summary = await rpc('demo', demo); isDemo = true;
+    clearDataset(); selectedFolder = null; selectedFile = null; consumptionFile = null; consumptionState = 'idle'; registryState = 'idle'; setBusy(true); summary = await rpc('demo', demo); isDemo = true;
     currentSource = { name: 'Демонстрационный реестр', folder: 'Сочинские ЭС · пример', type: 'demo' };
     updateSource(); renderResults(); $('#search-input').focus();
   } catch (error) { message('#form-message', error.message); }
@@ -233,8 +301,8 @@ async function startDemo() {
 }
 function updateSource() {
   $('#source-name').textContent = currentSource?.name || 'Реестр не подключён';
-  $('#source-meta').textContent = summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : 'Выберите предприятие в настройках';
-  $('#district-label').textContent = currentSource?.folder || 'Выберите предприятие';
+  $('#source-meta').textContent = busy && busyText ? busyText : summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : 'Выберите предприятие';
+  $('#district-label').textContent = currentSource?.folder || selectedFolder?.name || 'Выберите предприятие';
   $('#refresh').hidden = currentSource?.type !== 'disk';
   $('#demo-banner').hidden = !isDemo; $('#example-queries').hidden = !isDemo;
   document.querySelectorAll('[name="field"]').forEach(input => {
@@ -254,8 +322,9 @@ function updateSearchMode() {
 function emptyState(title, text, type = 'search', actions = '') { return `<div class="empty-state"><div class="empty-mark">${icon(type)}</div><h3>${title}</h3><p>${text}</p>${actions ? `<div class="empty-actions">${actions}</div>` : ''}</div>`; }
 function renderResults() {
   $('#show-more').hidden = true; $('#results-count').textContent = ''; $('#results-title').textContent = submitted ? 'Найденные абоненты' : 'Результаты поиска';
+  if (!summary && busy) { $('#results').innerHTML = emptyState('Загружаем реестр', busyText || 'Подготавливаем поиск…', 'file'); return; }
   if (!summary) {
-    $('#results').innerHTML = emptyState(pending ? 'Проверьте столбцы реестра' : 'Выберите предприятие', pending ? 'Подтвердите номера ПУ и лицевых счетов в настройках.' : 'Выберите предприятие электрических сетей в настройках. Реестр абонентов загрузится автоматически.', 'folder', '<button class="secondary" data-open-settings>Открыть настройки</button>' + (pending ? '' : '<button class="text-button" id="start-demo">Посмотреть пример</button>'));
+    $('#results').innerHTML = emptyState(pending ? 'Проверьте столбцы реестра' : 'Выберите предприятие', pending ? 'Подтвердите номера ПУ и лицевых счетов в настройках.' : 'Выберите предприятие электрических сетей. Реестр абонентов загрузится автоматически.', 'folder', `<button class="secondary" ${pending ? 'data-open-settings' : 'data-open-enterprises'}>${pending ? 'Открыть настройки' : 'Выбрать предприятие'}</button>` + (pending ? '' : '<button class="text-button" id="start-demo">Посмотреть пример</button>'));
     return;
   }
   if (!submitted) { $('#results').innerHTML = emptyState('Можно искать', `В реестре ${recordsText(summary.count)}. Введите номер ПУ, лицевой счёт или адрес.`, 'search'); return; }
@@ -285,20 +354,21 @@ async function openRecord(id) {
     const r = await rpc('record', { id }); activeRecord = r;
     const rows = r.labels.map((label, i) => `<div class="detail-row"><dt>${esc(label)}</dt><dd>${esc(r.values[i] || '—')}</dd></div>`);
     const populated = rows.filter((_, i) => r.values[i]), blank = rows.filter((_, i) => !r.values[i]);
-    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div></div><div class="details-title">ВСЕ ПОЛЯ СТРОКИ</div><dl>${populated.join('')}</dl>${blank.length ? `<details><summary class="hint">Пустые поля (${blank.length})</summary><dl>${blank.join('')}</dl></details>` : ''}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
+    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div></div><section class="consumption-action"><button class="primary analysis-button" type="button" disabled aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span><span class="soon-badge">Скоро</span></button><p class="hint" id="analysis-availability">${currentSource?.type === 'disk' && consumptionFile ? `Файл «${esc(consumptionFile.name)}» найден. Анализ будет доступен на следующем этапе.` : 'Анализ будет доступен на следующем этапе. Для него нужен файл «Потребление» в папке предприятия.'}</p></section><div class="details-title">ВСЕ ПОЛЯ СТРОКИ</div><dl>${populated.join('')}</dl>${blank.length ? `<details><summary class="hint">Пустые поля (${blank.length})</summary><dl>${blank.join('')}</dl></details>` : ''}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
     $('#record-dialog').showModal();
   } catch (error) { message('#form-message', error.message); }
 }
-$('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showSettings);
+$('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises);
+document.addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('[data-open-enterprises]')) showEnterprises(); });
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', e => { if (e.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) dialog.close(); }));
-$('#read-folders').addEventListener('click', readFolders);
+$('#read-folders').addEventListener('click', refreshSources);
 $('#folder-list').addEventListener('click', e => { const button = e.target.closest('[data-folder]'); if (button) selectFolder(Number(button.dataset.folder)); });
 $('#confirm-mapping').addEventListener('click', () => confirmMapping());
 $('#mapping-fields').addEventListener('change', updateMapPreview);
 $('#local-file').addEventListener('change', async e => {
   const file = e.target.files[0]; if (!file) return;
-  try { if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Реестр больше 40 МБ.'); await loadBuffer(await file.arrayBuffer(), { name: file.name, folder: 'Файл на устройстве', type: 'local', modified: file.lastModified }); }
+  try { selectedFolder = null; selectedFile = null; consumptionFile = null; consumptionState = 'idle'; registryState = 'idle'; renderIndicators(); if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Реестр больше 40 МБ.'); await loadBuffer(await file.arrayBuffer(), { name: file.name, folder: 'Файл на устройстве', type: 'local', modified: file.lastModified }); }
   catch (error) { setBusy(false); message('#settings-message', error.message); }
   e.target.value = '';
 });
@@ -308,20 +378,21 @@ $('#clear-query').addEventListener('click', () => { $('#search-input').value = '
 document.querySelectorAll('[name="field"]').forEach(input => input.addEventListener('change', () => { updateSearchMode(); submitted = false; results = []; searchVersion++; renderResults(); }));
 $('#partial').addEventListener('change', () => { updateSearchMode(); submitted = false; searchVersion++; renderResults(); });
 $('#show-more').addEventListener('click', () => doSearch(true));
-$('#refresh').addEventListener('click', () => { if (currentSource?.type !== 'disk') return; const folder = currentSource.folderInfo; $('#settings-dialog').showModal(); openFolder(folder); });
+$('#refresh').addEventListener('click', () => { if (currentSource?.type !== 'disk') return; const folder = currentSource.folderInfo; openFolder(folder); });
 $('#demo-exit').addEventListener('click', clearDataset);
-$('#results').addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('#start-demo')) startDemo(); const button = e.target.closest('[data-record]'); if (button) openRecord(button.dataset.record); });
+$('#results').addEventListener('click', e => { if (e.target.closest('#start-demo')) startDemo(); const button = e.target.closest('[data-record]'); if (button) openRecord(button.dataset.record); });
 $('#example-queries').addEventListener('click', e => { const b = e.target.closest('[data-query]'); if (!b) return; $(`[name="field"][value="${b.dataset.field}"]`).checked = true; updateSearchMode(); $('#search-input').value = b.dataset.query; $('#clear-query').hidden = false; doSearch(); });
 $('#record-body').addEventListener('click', async e => { if (!e.target.closest('#copy-record') || !activeRecord) return; try { await navigator.clipboard.writeText(activeRecord.labels.map((label, i) => `${label}: ${activeRecord.values[i] || '—'}`).join('\n')); toast('Данные скопированы'); } catch { toast('Браузер не разрешил копирование. Выделите текст карточки.'); } });
 
-renderResults();
+renderResults(); renderIndicators(); renderFolders();
 await readConfiguration();
-if (prefs.folder && sourceState === 'ready' && prefs.root === validateRoot(rootUrl())) {
-  $('#source-meta').textContent = 'Подключаем выбранный реестр…';
-  // Re-list on every visit, so a new file name does not leave the device on an old registry.
-  await openFolder(prefs.folder);
-  if (pending || !summary) { showSettings(); }
-} else if ($('#settings-dialog').open && sourceState === 'ready') await readFolders();
+if (sourceState === 'ready' && await readFolders()) {
+  const savedFolder = folders.find(f => f.path === prefs.folder?.path);
+  if (savedFolder) await openFolder(savedFolder);
+}
+window.addEventListener('offline', () => {
+  diskState = 'disconnected'; consumptionFile = null; consumptionState = selectedFolder ? 'error' : 'idle'; registryState = selectedFolder ? 'error' : 'idle'; renderIndicators();
+});
 
 // Optional browser standard; uses exactly the same UI actions and current working area.
 if (document.modelContext?.registerTool) {
