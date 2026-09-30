@@ -1,14 +1,33 @@
 /* SheetJS runs away from the interface thread; workbooks never leave the device. */
 importScripts('./vendor/xlsx.full.min.js');
 const core = import('./core.js');
-let sourceSheets = [], sheets = [], index = null;
+let sourceSheets = [], sheets = [], index = null, analysisService = null, monthlyModel = null;
 self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
-    if (action === 'checkConsumption') {
-      const { inspectMonthlyWorkbook } = await import('./workbook-check.js');
-      self.postMessage({ id, result: inspectMonthlyWorkbook(payload.buffer, XLSX) }); return;
+    if (action === 'checkIncoming') {
+      const { inspectExcelWorkbook } = await import('./workbook-check.js');
+      self.postMessage({ id, result: inspectExcelWorkbook(payload.buffer, XLSX) }); return;
     }
+    if (action === 'loadMonthly' || action === 'demoMonthly') {
+      analysisService = null;
+      const { readMonthlyWorkbook, indexMonthly } = await import('./monthly.js');
+      const { createAnalysisService } = await import('./analysis-service.js');
+      const parsed = action === 'demoMonthly' ? payload.parsed : readMonthlyWorkbook(payload.buffer, XLSX);
+      monthlyModel = indexMonthly(parsed);
+      analysisService = createAnalysisService(monthlyModel, payload.records);
+      self.postMessage({ id, result: analysisService.summary }); return;
+    }
+    if (action === 'updateAnalysisRegistry') {
+      if (monthlyModel) { const { createAnalysisService } = await import('./analysis-service.js'); analysisService = createAnalysisService(monthlyModel, payload.records); }
+      self.postMessage({ id, result: true }); return;
+    }
+    if (['analysisConsumer', 'analysisTP', 'analysisTPs'].includes(action)) {
+      if (!analysisService) throw new Error('Файл потребления не загружен.');
+      const result = action === 'analysisConsumer' ? analysisService.consumer(payload.account, payload.settings, payload.tp) : action === 'analysisTP' ? analysisService.contour(payload.tp, payload.settings) : analysisService.tps();
+      self.postMessage({ id, result }); return;
+    }
+    if (action === 'analysisRecords') { self.postMessage({ id, result: (index?.records || []).map(({ fields }) => ({ fields })) }); return; }
     const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {

@@ -13,3 +13,14 @@ export const demo = {
     ],
   }],
 };
+
+// A matching, entirely synthetic monthly report for the built-in demonstration.
+export const demoMonthly = {
+  months: Array.from({ length: 27 }, (_, i) => ({ y: 2024 + Math.floor((5+i)/12), m: (5+i)%12 })), warnings: [],
+  rows: [
+    {account:'00000001001',accountKey:'00000001001',alias:'',point:'00007001',name:'ТСН «Пример»',tp:'ТП-Д101',zone:'Однозонный',values:Array.from({length:27},(_,i)=>i<12?1450+[40,60,-20,85,-40,50][i%6]:260+[35,-40,10,-25,20][i%5]),source:'Пример:5'},
+    {account:'00000001001',accountKey:'00000001001',alias:'',point:'00007004',name:'ТСН «Пример»',tp:'ТП-Д101',zone:'Однозонный',values:Array.from({length:27},(_,i)=>i<12?620+i*3:120+i%4*9),source:'Пример:6'},
+    {account:'00000001002',accountKey:'00000001002',alias:'',point:'00007002',name:'Учебный абонент № 2',tp:'ТП-Д102',zone:'Однозонный',values:Array.from({length:27},(_,i)=>280+[40,-20,85,-40,50][i%5]),source:'Пример:7'},
+    {account:'00000001003',accountKey:'00000001003',alias:'',point:'00007003',name:'Учебный абонент № 3',tp:'ТП-Д103',zone:'Однозонный',values:Array(27).fill(0),source:'Пример:8'},
+  ],
+};

@@ -34,7 +34,7 @@ export function attachDialogSwipe(dialog, { close, back, canGoBack, prepareBack 
     dialog.style.setProperty('--swipe-progress', String(Math.min(position / Math.max(size, 1), 1)));
   }
   function begin(event, x, y) {
-    if (settling || event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (settling || event.target.closest('input, textarea, select, [data-no-swipe], [contenteditable="true"]')) return;
     clearVisuals();
     const body = event.target.closest('.dialog-body');
     start = { x, y, atTop: !body || body.scrollTop <= 1, fromHeader: Boolean(event.target.closest('.dialog-header')), canGoBack: canGoBack(), direction: null };

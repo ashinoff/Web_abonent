@@ -1,8 +1,10 @@
 import { clean, norm } from './core.js';
-import { demo } from './demo.js';
-import { findRegistry, findConsumption, isRegistryFile, REGISTRY_NAME, CONSUMPTION_NAME } from './source.js';
+import { demo, demoMonthly } from './demo.js';
+import { findRegistry, findConsumption, findIncoming, isRegistryFile, isConsumptionFile, REGISTRY_NAME, CONSUMPTION_NAME, INCOMING_NAME } from './source.js';
 import { attachDialogSwipe } from './gestures.js';
 import { groupRecordFields } from './record-sections.js';
+import { initAnalysisUI } from './analysis-ui.js';
+import { calculateReading } from './readings.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -11,14 +13,16 @@ const number = n => new Intl.NumberFormat('ru-RU').format(n);
 const recordsText = n => `${number(n)} ${n % 100 >= 11 && n % 100 <= 14 ? 'записей' : n % 10 === 1 ? 'запись' : n % 10 >= 2 && n % 10 <= 4 ? 'записи' : 'записей'}`;
 const subscribersWord = n => n % 100 >= 11 && n % 100 <= 14 ? 'абонентов' : n % 10 === 1 ? 'абонент' : n % 10 >= 2 && n % 10 <= 4 ? 'абонента' : 'абонентов';
 const formatDate = value => value ? new Date(value).toLocaleDateString('ru-RU') : '';
-const ratioLine = record => `<div class="transformer-ratio"><span>Коэф ТТ =</span> <strong>${esc(record.fields.transformerRatio || '—')}</strong></div>`;
+const ratioLine = record => `<div class="reading-inline"><div class="transformer-ratio"><span>Коэф ТТ =</span> <strong>${esc(record.fields.transformerRatio || '—')}</strong></div><div class="reading-calculator" data-previous="${esc(record.fields.receipt || '')}" data-ratio="${esc(record.fields.transformerRatio || '')}"><input type="text" inputmode="decimal" autocomplete="off" aria-label="Фактические показания ПУ ${esc(record.fields.meter || '')}" placeholder="Факт. показания"><output hidden aria-live="polite"></output><button type="button" data-reading-action aria-label="Рассчитать объём">${icon('check')}</button></div></div><p class="reading-note" role="status" hidden></p><p class="reading-formula" hidden></p>`;
 const pointText = fields => [fields.point || fields.pointNumber, fields.pointName].filter(Boolean).join(' · ') || '—';
 const pointLine = record => `<div class="quick-point"><span class="number-label">Точка учёта</span><strong>${esc(pointText(record.fields))}</strong></div>`;
 const initial = window.ABONENT_CONFIG || {};
 let config = { ...initial }, proxy = false, folders = [], selectedFolder = null, selectedFile = null;
-let resFolders = [], selectedRes = null, resState = 'idle', cancelConsumptionScan = null;
+let resFolders = [], selectedRes = null, resState = 'idle';
 let sourceState = 'loading', diskState = 'checking', directoryState = 'loading', folderRead = null;
 let consumptionFile = null, consumptionState = 'idle', consumptionError = '', registryState = 'idle', busyText = '';
+let incomingFile = null, incomingState = 'idle', incomingError = '', monthlyWorker = null, monthlyId = 0;
+const monthlyRequests = new Map();
 let summary = null, pending = null, currentSource = null, isDemo = false, busy = false, operation = 0;
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 let otherFiles = [], tpChoices = [], tpSelection = null, tpMeters = [], tpVersion = 0, tpBusy = false, recordVersion = 0;
@@ -50,11 +54,27 @@ function rpc(action, payload = {}, transfer = []) {
     w.postMessage({ id, action, payload }, transfer);
   });
 }
+function resetMonthly(error = new Error('Операция отменена.')) {
+  monthlyWorker?.terminate(); monthlyWorker = null;
+  for (const p of monthlyRequests.values()) { clearTimeout(p.timer); p.reject(error); }
+  monthlyRequests.clear();
+}
+function monthlyRPC(action, payload = {}, transfer = []) {
+  if (!monthlyWorker) {
+    monthlyWorker = createWorkbookWorker();
+    monthlyWorker.onmessage = ({ data }) => { const p=monthlyRequests.get(data.id); if (!p) return; clearTimeout(p.timer); monthlyRequests.delete(data.id); data.error ? p.reject(new Error(data.error)) : p.resolve(data.result); };
+    monthlyWorker.onerror = () => { resetMonthly(new Error('Не удалось обработать файл потребления. Повторите загрузку.')); consumptionState='error'; renderIndicators(); };
+  }
+  return new Promise((resolve,reject) => {
+    const id=++monthlyId, timer=setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },120000);
+    monthlyRequests.set(id,{resolve,reject,timer}); monthlyWorker.postMessage({id,action,payload},transfer);
+  });
+}
 function message(target, value, loading = false) { const el = $(target); el.textContent = value; el.hidden = !value; el.classList.toggle('loading', loading); }
 function toast(value) { $('#toast').textContent = value; $('#toast').hidden = false; setTimeout(() => { $('#toast').hidden = true; }, 3000); }
 function setBusy(value, text = '') {
   busy = value; busyText = text;
-  for (const sel of ['#confirm-mapping', '#local-file', '#search-submit', '#tp-open']) $(sel).disabled = value;
+  for (const sel of ['#confirm-mapping', '#local-file', '#search-submit', '#tp-open', '#local-monthly']) $(sel).disabled = value;
   $('#read-folders').disabled = value || sourceState === 'loading' || directoryState === 'loading';
   document.querySelectorAll('.choice-item').forEach(el => { el.disabled = value; });
   $('#refresh').disabled = value;
@@ -68,7 +88,7 @@ function openDialog(id) {
   const dialog = $('#' + id);
   if (!dialog.open) dialog.showModal();
 }
-function showSettings() { renderIndicators(); openDialog('settings-dialog'); }
+function showSettings() { renderIndicators(); analysisUI.settingsTab('connection'); openDialog('settings-dialog'); }
 function showEnterprises() {
   openDialog('enterprise-dialog'); renderFolders();
   if (sourceState !== 'loading' && directoryState !== 'ready' && !busy) readFolders();
@@ -82,10 +102,12 @@ function rootUrl() { return clean(config.publicUrl); }
 function renderIndicators() {
   const diskText = diskState === 'connected' ? 'Общая папка доступна' : diskState === 'checking' ? 'Проверяем подключение…' : sourceState === 'missing' ? 'Общая папка не подключена' : 'Не удалось прочитать папку';
   const registryText = registryState === 'ready' ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : registryState === 'error' ? pending ? 'Подтвердите столбцы в настройках' : 'Реестр не загружен' : 'Сначала выберите РЭС';
-  const consumptionText = consumptionState === 'ready' ? 'Прочитан: ' + consumptionFile.name : consumptionState === 'checking' ? `Читаем «${CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
+  const consumptionText = consumptionState === 'ready' ? 'Готов к анализу: ' + (consumptionFile?.name || 'Демонстрация') : consumptionState === 'checking' ? `Читаем «${CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
+  const incomingText = incomingState === 'ready' ? 'Прочитан: ' + incomingFile.name + ' · баланс ожидает формат' : incomingState === 'checking' ? 'Читаем файл приёма…' : incomingState === 'missing' ? `Файл «${INCOMING_NAME}» не найден` : incomingState === 'error' ? incomingError || 'Не удалось прочитать приём' : 'Сначала выберите РЭС';
   for (const [name, state, label] of [
     ['disk', diskState === 'connected' ? 'on' : diskState === 'checking' ? 'checking' : 'off', diskText],
     ['registry', registryState === 'ready' ? 'on' : registryState === 'checking' ? 'checking' : registryState === 'idle' ? 'idle' : 'off', registryText],
+    ['incoming', incomingState === 'ready' ? 'on' : incomingState === 'checking' ? 'checking' : incomingState === 'idle' ? 'idle' : 'off', incomingText],
     ['consumption', consumptionState === 'ready' ? 'on' : consumptionState === 'checking' ? 'checking' : consumptionState === 'idle' ? 'idle' : 'off', consumptionText],
   ]) {
     const indicator = $('#' + name + '-indicator');
@@ -97,6 +119,11 @@ function renderIndicators() {
   $('#res-detail').textContent = selectedRes?.name || 'Не выбрана';
   $('#registry-detail').textContent = currentSource?.type === 'local' ? currentSource.name + ' · с устройства' : currentSource?.type === 'demo' ? 'Демонстрационный реестр' : (selectedFile ? selectedFile.name + ' · ' : '') + registryText;
   $('#consumption-detail').textContent = consumptionText;
+  $('#incoming-detail').textContent = incomingText;
+  $('#contour-open').disabled = busy || consumptionState !== 'ready';
+  $('#tp-analyze').disabled = busy || consumptionState !== 'ready';
+  const analysisButton = $('#consumer-analyze');
+  if (analysisButton) { analysisButton.disabled = consumptionState !== 'ready' || !activeRecord?.fields.account; $('#analysis-availability').textContent = consumptionState === 'ready' ? 'Объёмы всех точек потребителя по ЛС. Без сравнения с группой.' : consumptionText; }
   $('#source-name').dataset.state = summary && (currentSource?.type !== 'disk' || registryState === 'ready') ? 'ready' : 'missing';
   $('#other-files-count').textContent = number(otherFiles.length);
   $('#other-files-list').innerHTML = otherFiles.length ? otherFiles.map(f => `<li>${esc(f.name)} <span>Не используется</span></li>`).join('') : `<li>${selectedRes ? 'Других файлов нет' : 'Сначала выберите РЭС'}</li>`;
@@ -257,7 +284,7 @@ async function selectRes(i) {
 async function openRes(res) {
   if (busy || !selectedFolder) return;
   clearResSelection(); selectedRes = res;
-  consumptionState = 'checking'; registryState = 'checking';
+  consumptionState = 'checking'; incomingState = 'checking'; registryState = 'checking';
   if (prefs.res?.path !== res.path) prefs = { root: rootUrl(), folder: { name: selectedFolder.name, path: selectedFolder.path } };
   prefs.res = { name: res.name, path: res.path }; savePrefs(); renderResFolders();
   try {
@@ -265,9 +292,10 @@ async function openRes(res) {
     const items = await listFolder(res.path); diskState = 'connected';
     consumptionFile = findConsumption(items); consumptionState = consumptionFile ? 'checking' : 'missing';
     selectedFile = findRegistry(items);
-    otherFiles = items.filter(item => item.type === 'file' && item !== selectedFile && item !== consumptionFile).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    incomingFile = findIncoming(items); incomingState = incomingFile ? 'checking' : 'missing';
+    otherFiles = items.filter(item => item.type === 'file' && item !== selectedFile && item !== consumptionFile && item !== incomingFile).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   } catch (error) {
-    diskState = 'disconnected'; consumptionState = 'error'; registryState = 'error';
+    diskState = 'disconnected'; consumptionState = 'error'; incomingState = 'error'; registryState = 'error';
     setBusy(false); message('#settings-message', error.message); showSettings(); return;
   }
   setBusy(false);
@@ -277,6 +305,7 @@ async function openRes(res) {
     message('#settings-message', `Файл «${REGISTRY_NAME}» не найден. Добавьте его в папку выбранной РЭС. Остальные файлы в поиске не используются.`); showSettings();
   }
   if (selectedRes?.path === res.path && consumptionFile) await readConsumptionFile();
+  if (selectedRes?.path === res.path && incomingFile) await readIncomingFile();
 }
 async function boundedBuffer(response) {
   const max = (config.maxFileMB || 40) * 1048576;
@@ -314,18 +343,22 @@ async function downloadFile() {
     await loadBuffer(buffer, { name: file.name, folder: folder.name, res: res.name, modified: file.modified, type: 'disk', root: rootUrl(), folderInfo: folder, resInfo: res, fileInfo: file });
   } catch (error) { registryState = 'error'; setBusy(false); message('#settings-message', error.message); showSettings(); }
 }
-function checkConsumptionBuffer(buffer) {
-  // A separate short-lived worker cannot replace or reset the active search index.
-  return new Promise((resolve, reject) => {
-    const scanner = createWorkbookWorker();
-    const finish = (error, result) => { clearTimeout(timer); scanner.terminate(); if (cancelConsumptionScan === cancel) cancelConsumptionScan = null; error ? reject(error) : resolve(result); };
-    const cancel = () => finish(new Error('Проверка отменена.'));
-    const timer = setTimeout(() => finish(new Error('Чтение файла заняло слишком много времени.')), 120000);
-    cancelConsumptionScan = cancel;
-    scanner.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data.result);
-    scanner.onerror = () => finish(new Error('Не удалось прочитать Excel. Повторите обновление.'));
-    scanner.postMessage({ id: 1, action: 'checkConsumption', payload: { buffer } }, [buffer]);
-  });
+async function loadMonthlyBuffer(buffer) {
+  const op = operation, records = await rpc('analysisRecords');
+  if (op !== operation) throw new Error('Рабочая область изменилась.');
+  return monthlyRPC('loadMonthly', { buffer, records }, [buffer]);
+}
+async function readIncomingFile() {
+  const op=operation, file=incomingFile;
+  incomingState='checking'; incomingError=''; renderIndicators();
+  try {
+    const { buffer } = await fetchWorkbook(file);
+    if (op!==operation || incomingFile!==file) return;
+    await monthlyRPC('checkIncoming',{buffer},[buffer]);
+    if (op!==operation || incomingFile!==file) return;
+    incomingState='ready';
+  } catch(error) { if(op!==operation || incomingFile!==file)return;incomingState='error';incomingError=error.message; }
+  renderIndicators();
 }
 async function readConsumptionFile() {
   const op = operation, file = consumptionFile;
@@ -333,7 +366,7 @@ async function readConsumptionFile() {
   try {
     const { buffer } = await fetchWorkbook(file);
     if (op !== operation || consumptionFile !== file) return;
-    await checkConsumptionBuffer(buffer);
+    await loadMonthlyBuffer(buffer);
     if (op !== operation || consumptionFile !== file) return;
     consumptionState = 'ready';
   } catch (error) {
@@ -343,7 +376,7 @@ async function readConsumptionFile() {
   renderIndicators();
 }
 function clearDataset(keepDirectory = false) {
-  operation++; cancelConsumptionScan?.(); searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
+  operation++; resetMonthly(); analysisUI.reset(); incomingFile=null; incomingState='idle'; incomingError=''; if (keepDirectory) { if (consumptionFile) consumptionState='checking'; } else { consumptionFile=null; consumptionState='idle'; consumptionError=''; } searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
   tpVersion++; recordVersion++; tpChoices = []; tpSelection = null; tpMeters = []; tpBusy = false; if (!keepDirectory) otherFiles = [];
   tpViewKey = ''; tpPickerQuery = ''; tpPickerScroll = 0; clearTimeout(tpFilterTimer);
   for (const id of ['tp-dialog', 'search-results-dialog', 'record-dialog']) $('#' + id).close();
@@ -352,7 +385,9 @@ function clearDataset(keepDirectory = false) {
   updateSource(); renderResults();
 }
 async function loadBuffer(buffer, source) {
-  clearDataset(source.type === 'disk'); const op = operation;
+  const listedIncoming = incomingFile;
+  clearDataset(source.type === 'disk'); if (source.type === 'disk') { incomingFile=listedIncoming; incomingState=listedIncoming?'checking':'missing'; }
+  const op = operation;
   setBusy(true, 'Читаем Excel и определяем столбцы…');
   const data = await rpc('load', { buffer, file: source.name }, [buffer]);
   if (operation !== op) return;
@@ -387,6 +422,7 @@ async function confirmMapping(savedOverrides, automatic = false) {
     setBusy(true, 'Готовим поиск…');
     const data = await rpc('remap', { overrides });
     currentSource = pending.source; summary = data;
+    if (consumptionState === 'ready') await monthlyRPC('updateAnalysisRegistry',{records:await rpc('analysisRecords')});
     if (currentSource.type === 'disk') {
       prefs = { root: currentSource.root, folder: { name: currentSource.folderInfo.name, path: currentSource.folderInfo.path }, res: { name: currentSource.resInfo.name, path: currentSource.resInfo.path }, file: { name: currentSource.fileInfo.name, path: currentSource.fileInfo.path }, mappingSignature: signature(pending), overrides };
       savePrefs();
@@ -401,6 +437,8 @@ async function startDemo() {
   if (busy) return;
   try {
     clearDataset(); selectedFolder = null; selectedRes = null; resFolders = []; resState = 'idle'; selectedFile = null; consumptionFile = null; consumptionState = 'idle'; registryState = 'idle'; setBusy(true); summary = await rpc('demo', demo); isDemo = true;
+    consumptionFile = { name: 'ПО по месячно · пример' }; consumptionState='checking';
+    await monthlyRPC('demoMonthly',{parsed:demoMonthly,records:await rpc('analysisRecords')}); consumptionState='ready';
     currentSource = { name: 'Демонстрационный реестр', folder: 'Сочинские ЭС · пример', res: 'Дагомысский РЭС · пример', type: 'demo' };
     updateSource(); renderResults(); $('#search-input').focus();
   } catch (error) { message('#form-message', error.message); }
@@ -562,7 +600,7 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     const r = await rpc('record', { id });
     if (version !== recordVersion || op !== operation || context.parent && !$('#' + context.parent).open) return;
     activeRecord = r; recordContext = context;
-    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" type="button" disabled aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span><span class="soon-badge">Скоро</span></button><p class="hint" id="analysis-availability">${currentSource?.type === 'disk' && consumptionState === 'ready' ? `Файл «${esc(consumptionFile.name)}» прочитан. Анализ будет доступен на следующем этапе.` : 'Анализ будет доступен на следующем этапе. Для него нужен файл «По по месячно.xls» в папке РЭС.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
+    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" id="consumer-analyze" type="button" ${consumptionState !== 'ready' || !r.fields.account ? 'disabled' : ''} aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span></button><p class="hint" id="analysis-availability">${consumptionState === 'ready' ? 'Объёмы всех точек потребителя по ЛС. Без сравнения с группой.' : 'Для анализа загрузите «ПО по месячно.xls» или XLSX в папку РЭС.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
     $('#record-body .record-main-numbers').insertAdjacentHTML('beforeend', pointLine(r));
     if (context.variants.length > 1) {
       $('#record-body').insertAdjacentHTML('afterbegin', `<div class="record-variants"><label for="record-variant">Строки этого ПУ в реестре: ${context.variants.length}</label><select id="record-variant">${context.variants.map(v => `<option value="${esc(v.id)}" ${v.id === id ? 'selected' : ''}>${esc([pointText(v), 'ЛС ' + (v.account || '—'), v.sheet + ', строка ' + v.row].join(' · '))}</option>`).join('')}</select></div>`);
@@ -574,11 +612,25 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     $('#record-body').scrollTop = 0;
   } catch (error) { message('#form-message', error.message); }
 }
+const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings });
+$('#record-body').addEventListener('click', e => { if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account); });
+$('#contour-open').addEventListener('click', analysisUI.openTPs);
+$('#tp-analyze').addEventListener('click', () => { if (tpSelection) analysisUI.openTP(tpSelection.name); });
+$('#analysis-back').addEventListener('click', () => dialogControls.get('analysis-dialog').goBack());
+function applyReading(box) {
+  const parent=box.parentElement.parentElement, note=parent.querySelector('.reading-note'), formula=parent.querySelector('.reading-formula'), input=box.querySelector('input'), output=box.querySelector('output'), button=box.querySelector('button');
+  note.hidden=true; formula.hidden=true;
+  if (box.dataset.calculated==='true') { delete box.dataset.calculated; output.hidden=true;output.textContent='';input.hidden=false;input.value='';button.innerHTML=icon('check');button.setAttribute('aria-label','Рассчитать объём');input.focus();return; }
+  try { const result=calculateReading(input.value,box.dataset.previous,box.dataset.ratio), fmt=n=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:6}).format(n);output.textContent=fmt(result.volume)+' кВт·ч';output.hidden=false;input.hidden=true;box.dataset.calculated='true';button.innerHTML=icon('close');button.setAttribute('aria-label','Очистить расчёт');formula.textContent=`(${fmt(result.actual)} − ${fmt(result.previous)}) × ${fmt(result.ratio)}`;formula.hidden=false;if(result.negative){note.textContent='Отрицательный объём. Проверьте показания и возможное переполнение счётчика.';note.hidden=false;} }
+  catch(error){note.textContent=error.message;note.hidden=false;input.focus();}
+}
+document.addEventListener('click',e=>{const button=e.target.closest('[data-reading-action]');if(button)applyReading(button.closest('.reading-calculator'));});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.reading-calculator')){e.preventDefault();applyReading(e.target.closest('.reading-calculator'));}});
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises); $('#res-button').addEventListener('click', showRes);
 document.addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('[data-open-enterprises]')) showEnterprises(); if (e.target.closest('[data-open-res]')) showRes(); });
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => dialogControls.get(button.closest('dialog').id).dismiss()));
 document.querySelectorAll('dialog').forEach(dialog => {
-  const controls = attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.id === 'tp-dialog' ? showTPPicker() : dialog.close(), canGoBack: () => dialog.id === 'tp-dialog' ? Boolean(tpViewKey) : dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open), prepareBack: dialog.id === 'tp-dialog' ? prepareTPReturn : null });
+  const controls = attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.id === 'analysis-dialog' ? analysisUI.back() : dialog.id === 'tp-dialog' ? showTPPicker() : dialog.close(), canGoBack: () => dialog.id === 'analysis-dialog' ? analysisUI.canGoBack() : dialog.id === 'tp-dialog' ? Boolean(tpViewKey) : dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open), prepareBack: dialog.id === 'tp-dialog' ? prepareTPReturn : null });
   dialogControls.set(dialog.id, controls);
   dialog.addEventListener('cancel', e => { e.preventDefault(); controls.dismiss(); });
   dialog.addEventListener('click', e => { if (e.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) controls.dismiss(); });
@@ -614,6 +666,19 @@ $('#local-file').addEventListener('change', async e => {
   catch (error) { setBusy(false); message('#settings-message', error.message); }
   e.target.value = '';
 });
+$('#local-monthly').addEventListener('change', async e => {
+  const file=e.target.files[0]; if(!file)return; const op=operation;
+  try {
+    if(!summary)throw new Error('Сначала откройте реестр и подтвердите его столбцы.');
+    if(!isConsumptionFile(file.name))throw new Error(`Выберите «${CONSUMPTION_NAME}».`);
+    if(file.size>(config.maxFileMB||40)*1048576)throw new Error('Файл больше 40 МБ.');
+    resetMonthly(); analysisUI.reset(); setBusy(true,'Читаем файл потребления…');
+    consumptionFile={name:file.name};consumptionState='checking';renderIndicators();
+    await loadMonthlyBuffer(await file.arrayBuffer()); if(op!==operation)return;
+    consumptionState='ready';message('#settings-message','Потребление готово к анализу.');
+  } catch(error){if(op===operation){consumptionState='error';consumptionError=error.message;message('#settings-message',error.message);}}
+  finally{if(op===operation){setBusy(false);renderIndicators();}e.target.value='';}
+});
 $('#search-form').addEventListener('submit', e => { e.preventDefault(); doSearch(); });
 $('#search-input').addEventListener('input', () => { $('#clear-query').hidden = !$('#search-input').value; submitted = false; searchVersion++; renderResults(); message('#form-message', ''); });
 $('#clear-query').addEventListener('click', () => { $('#search-input').value = ''; $('#search-input').dispatchEvent(new Event('input')); $('#search-input').focus(); });
@@ -633,7 +698,7 @@ if (sourceState === 'ready' && await readFolders()) {
   if (savedFolder) await openFolder(savedFolder, { restore: true });
 }
 window.addEventListener('offline', () => {
-  diskState = 'disconnected'; consumptionFile = null; consumptionState = selectedRes ? 'error' : 'idle'; registryState = selectedRes ? 'error' : 'idle'; renderIndicators();
+  diskState = 'disconnected'; renderIndicators();
 });
 
 // Optional browser standard; uses exactly the same UI actions and current working area.
