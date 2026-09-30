@@ -23,8 +23,25 @@ test('flattened two-level header matching the provided 1C structure', () => {
   assert.equal(parsed.layout.flattened, true);
   assert.equal(parsed.records[0].fields.meter, '00123456');
   assert.equal(parsed.records[0].fields.account, '000001001');
+  assert.equal(parsed.records[0].fields.transformerRatio, '1');
   assert.equal(parsed.records[0].address, 'Сочи, Примерная, д. 12');
   assert.equal(parsed.records[0].values.length, row.length);
+});
+test('quick TT ratio comes from the meter group, with original values and empty cells preserved', () => {
+  const rows = [
+    ['ЛС', 'Характеристики ТН', 'Прибор учета', ''],
+    ['', 'Коэффициент трансформации', 'Номер счетчика', 'Коэффициент трансформации'],
+    ['001', '600', '005', '40'],
+    ['002', '600', '006', 0],
+    ['003', '600', '007', ''],
+    ['004', '600', '008', '12,5'],
+  ];
+  const merges = [{s:{r:0,c:0},e:{r:1,c:0}}, {s:{r:0,c:2},e:{r:0,c:3}}];
+  const parsed = parseMatrix(rows, {merges});
+  assert.deepEqual(parsed.records.map(r=>r.fields.transformerRatio), ['40','0','','12,5']);
+  assert.equal(search(buildIndex([parsed]),{query:'005'}).records[0].fields.transformerRatio,'40');
+  const combined = parseMatrix([['ЛС','Номер ПУ','Прибор учёта\nКоэфициент трансформации'],['001','005','100/5']]);
+  assert.equal(combined.records[0].fields.transformerRatio,'100/5');
 });
 test('native Excel merged headers retain positions and unknown fields', () => {
   const rows = [['Отчёт'], ['ЛС / ЛС СТЕК', 'Наименование договора', 'Прибор учета', '', 'Дополнительное поле'], ['', '', 'Вид счетчика', 'Номер счетчика'], ['00001001', 'Пример', 'РиМ', '00123456', 'Сохранить']];

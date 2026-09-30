@@ -11,7 +11,7 @@ test('static serving, API configuration and rejected arbitrary remote source', a
   const server = createServer(); await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
   try {
     const root = `http://127.0.0.1:${server.address().port}`;
-    const index = await fetch(root); assert.equal(index.status,200); assert.match(await index.text(),/Найти абонента/);
+    const index = await fetch(root); assert.equal(index.status,200); assert.match(await index.text(),/id="search-form"/);
     assert.equal((await (await fetch(root+'/api/config')).json()).proxy,true);
     assert.equal((await fetch(root+'/api/resources?public_key=https://evil.test')).status,503);
     assert.equal((await fetch(root+'/.env')).status,404);

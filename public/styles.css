@@ -56,3 +56,16 @@ html:has(dialog[open]){overflow:hidden}
  .enterprise-dialog .dialog-header h2{font-size:22px}
  .enterprise-dialog .choice-list{gap:12px}
 }
+
+/* The enterprise is a primary control, separate from the search form. */
+.enterprise-toolbar{display:flex;margin-bottom:24px}
+.district-button{position:static;right:auto;bottom:auto;min-height:68px;width:390px;max-width:100%;margin:0;justify-content:space-between;gap:18px;padding:14px 18px;background:#fff;color:var(--navy);border:1.5px solid #98b5da;border-radius:12px;box-shadow:0 3px 12px #183e6b09}
+.district-button:hover{background:#edf4ff;border-color:#5e8fc8}
+.enterprise-button-copy{display:grid;gap:5px;min-width:0}
+.enterprise-caption{font-size:12px;font-weight:400;line-height:1.4;color:#657b97}
+#district-label{font-size:17px;font-weight:650;line-height:1.35;color:#112c4e}
+.district-button .small-chevron{width:16px;height:16px;flex:0 0 16px;color:#294d79}
+.transformer-ratio{grid-column:1/-1;border-top:1px solid #dce5f1;padding-top:11px;display:flex;align-items:baseline;gap:5px;font-size:14px;line-height:1.5;color:#536b87;overflow-wrap:anywhere}
+.transformer-ratio strong{font-weight:650;color:var(--navy)}
+@media(max-width:900px) and (min-width:701px){.district-button{width:340px}}
+@media(max-width:700px){.workspace{padding-top:20px}.enterprise-toolbar{margin-bottom:19px}.district-button{width:100%;min-height:67px;padding:13px 16px}.transformer-ratio{padding-top:10px}}

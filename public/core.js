@@ -9,6 +9,7 @@ const aliases = {
   building: ['корпус'], flat: ['квартира', 'кв.'], address: ['адрес', 'адрес точки учета', 'адрес объекта'],
   phone: ['телефон', 'контактный телефон'], status: ['состояние ту', 'статус', 'состояние'],
   model: ['вид счетчика', 'тип счетчика', 'модель счетчика', 'тип пу'],
+  transformerRatio: ['коэффициент трансформации', 'коэфициент трансформации', 'коэф. трансформации', 'коэф трансформации', 'коэффициент трансформации тт', 'коэф тт', 'коэф. тт', 'прибор учета коэффициент трансформации', 'прибор учета коэфициент трансформации'],
   station: ['подстанция', 'пс'], feeder: ['фидер10', 'фидер 10', 'фидер'], tp: ['тп'],
   power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер ту'],
 };
@@ -67,6 +68,9 @@ export function detectLayout(matrix, merges = []) {
   labels = labels.map(label => { const n = (seen.get(label) || 0) + 1; seen.set(label, n); return n === 1 ? label : `${label} (${n})`; });
   const mapping = {};
   labels.forEach((label, c) => { const key = fieldKey(label); if (key && mapping[key] === undefined) mapping[key] = c; });
+  // The requested quick value belongs to the meter section, not a similarly named TN field.
+  const meterRatio = labels.findIndex(label => norm(label).includes('прибор учета') && fieldKey(label) === 'transformerRatio');
+  if (meterRatio >= 0) mapping.transformerRatio = meterRatio;
   return { start, end, labels, mapping, flattened };
 }
 export function columnName(n) { let result = ''; for (n++; n; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result; }
