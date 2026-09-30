@@ -11,7 +11,8 @@ const aliases = {
   model: ['вид счетчика', 'тип счетчика', 'модель счетчика', 'тип пу'],
   transformerRatio: ['коэффициент трансформации', 'коэфициент трансформации', 'коэф. трансформации', 'коэф трансформации', 'коэффициент трансформации тт', 'коэф тт', 'коэф. тт', 'прибор учета коэффициент трансформации', 'прибор учета коэфициент трансформации'],
   station: ['подстанция', 'пс'], feeder: ['фидер10', 'фидер 10', 'фидер'], tp: ['тп'],
-  power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер ту'],
+  power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер точки учета', 'код точки учета'],
+  pointNumber: ['номер ту'], pointName: ['ту', 'точка учета', 'наименование ту', 'наименование точки учета', 'объект учета'],
 };
 export function fieldKey(label) {
   const parts = norm(label).split(' · ').reverse();
@@ -35,9 +36,9 @@ export function detectLayout(matrix, merges = []) {
   // A flattened two-line 1C header loses its merged-cell offsets when copied.
   // Recognize this exact layout; do not apply a blind fixed-column mapping.
   let flattened = false;
-  if (start > 0 && norm(rows[start][0]) === 'субабонент' && fieldKey(rows[start - 1][4]) === 'account' && norm(rows[start - 1][5]) === 'наименование договора' && !merges.length) {
-    start--; flattened = true;
-  }
+  const flattenedTop = r => r >= 0 && norm(rows[r + 1]?.[0]) === 'субабонент' && fieldKey(rows[r]?.[4]) === 'account' && norm(rows[r]?.[5]) === 'наименование договора';
+  if (!merges.length && flattenedTop(start)) flattened = true;
+  else if (!merges.length && flattenedTop(start - 1)) { start--; flattened = true; }
   let end = start;
   if (flattened) end = start + 1;
   else {
@@ -77,7 +78,7 @@ export function columnName(n) { let result = ''; for (n++; n; n = Math.floor((n 
 export function restoreNumericIdentifiers(matrix, worksheet, layout) {
   // Excel's General display format switches long IDs to scientific notation.
   // Read their stored integer value without losing intentional zero padding.
-  const columns = new Set(['meter', 'account', 'point', 'phone'].map(key => layout.mapping[key]).filter(Number.isInteger));
+  const columns = new Set(['meter', 'account', 'point', 'pointNumber', 'phone'].map(key => layout.mapping[key]).filter(Number.isInteger));
   for (const [c, label] of layout.labels.entries()) if (/номер|телефон|лицевой|^лс/i.test(label)) columns.add(c);
   for (let r = layout.end + 1; r < matrix.length; r++) for (const c of columns) {
     const cell = worksheet[`${columnName(c)}${r + 1}`];
@@ -110,13 +111,37 @@ export function parseMatrix(matrix, { sheet = 'Лист1', file = '', merges = [
 }
 export function buildIndex(sheets) {
   const records = sheets.flatMap(s => s.records);
-  const meter = new Map(), account = new Map();
+  const meter = new Map(), account = new Map(), tp = new Map();
   records.forEach((record, index) => {
     for (const [map, key] of [[meter, record.meterKey], [account, record.accountKey]]) {
       if (key) { const ids = map.get(key) || []; ids.push(index); map.set(key, ids); }
     }
+    const tpKey = norm(record.fields.tp);
+    if (tpKey) {
+      if (!tp.has(tpKey)) tp.set(tpKey, { key: tpKey, name: record.fields.tp, meters: new Map(), missingMeters: 0 });
+      const group = tp.get(tpKey);
+      if (!record.meterKey) group.missingMeters++;
+      else {
+        if (!group.meters.has(record.meterKey)) group.meters.set(record.meterKey, []);
+        group.meters.get(record.meterKey).push(index);
+      }
+    }
   });
-  return { records, meter, account };
+  return { records, meter, account, tp };
+}
+export function listTPs(index) {
+  return [...index.tp.values()].map(({ key, name, meters, missingMeters }) => ({ key, name, total: meters.size, missingMeters }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+}
+export function metersByTP(index, { key, offset = 0, limit = 100 }) {
+  const tp = index.tp.get(key);
+  if (!tp) throw new Error('ТП не найдена в текущем реестре.');
+  const groups = [...tp.meters.values()].sort((a, b) => index.records[a[0]].fields.meter.localeCompare(index.records[b[0]].fields.meter, 'ru', { numeric: true }));
+  return { key: tp.key, name: tp.name, total: groups.length, missingMeters: tp.missingMeters,
+    meters: groups.slice(offset, offset + Math.min(limit, 200)).map(ids => {
+      const rows = ids.map(i => index.records[i]);
+      return { meter: rows[0].fields.meter, variants: rows.map(r => ({ id: r.id, account: r.fields.account || '', point: r.fields.point || r.fields.pointNumber || '', pointName: r.fields.pointName || '', name: r.fields.name || '', address: r.address, sheet: r.sheet, row: r.row })) };
+    }) };
 }
 export function search(index, { query, field = 'meter', partial = false, offset = 0, limit = 30 }) {
   if (!['meter', 'account', 'address'].includes(field)) throw new Error('Неизвестное поле поиска.');

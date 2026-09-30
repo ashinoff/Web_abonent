@@ -25,6 +25,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 4 8 8-8 8"/></symbol>
     <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 3v17h17M8 15l4-5 4 2 5-7"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 11 6-6 6 6M12 5v14"/></symbol>
   </svg>
   <header class="topbar">
     <div class="header-inner">
@@ -47,8 +48,9 @@
           <fieldset class="search-types"><legend class="sr-only">Искать по</legend><label><input type="radio" name="field" value="meter" checked><span>Номер ПУ</span></label><label><input type="radio" name="field" value="account"><span>Лицевой счёт</span></label><label><input type="radio" name="field" value="address"><span>Адрес</span></label></fieldset>
           <label class="input-label" for="search-input" id="search-label">Номер прибора учёта</label>
           <div class="search-input-wrap"><svg><use href="#i-search"/></svg><input id="search-input" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Введите номер счётчика" maxlength="200"><button type="button" class="clear-input" id="clear-query" aria-label="Очистить поиск" hidden><svg><use href="#i-close"/></svg></button></div>
-          <div class="search-options"><label class="switch-label"><input type="checkbox" id="partial"><span class="switch-track"></span><span>По части номера</span></label><span id="match-hint">Точное совпадение</span></div>
+          <p class="search-match-hint" id="match-hint">Можно ввести номер целиком или его часть</p>
           <button class="primary search-submit" type="submit" id="search-submit"><svg><use href="#i-search"/></svg>Найти</button>
+          <button class="secondary tp-open" type="button" id="tp-open" aria-haspopup="dialog" aria-controls="tp-dialog"><svg><use href="#i-bolt"/></svg>Поиск по ТП</button>
           <div id="form-message" class="form-message" role="status" hidden></div>
         </form>
         <div class="source-card" id="source-card"><div class="source-icon"><svg><use href="#i-file"/></svg></div><div class="source-copy"><strong id="source-name">Реестр не подключён</strong><span id="source-meta">Выберите предприятие</span></div><button class="icon-button" id="refresh" title="Обновить реестр" aria-label="Обновить реестр" hidden><svg><use href="#i-refresh"/></svg></button></div>
@@ -59,7 +61,6 @@
       <section class="results-column" aria-label="Результаты поиска" aria-live="polite" aria-atomic="false">
         <div class="results-heading"><h2 id="results-title">Результаты поиска</h2><span id="results-count"></span></div>
         <div id="results"></div>
-        <button class="secondary show-more" id="show-more" hidden>Показать ещё</button>
       </section>
     </div>
     <footer class="page-footer"><span>РОССЕТИ <span class="footer-slash">/</span> КУБАНЬЭНЕРГО</span><span>Данные из вашего реестра</span></footer>
@@ -72,14 +73,28 @@
     <div class="dialog-header"><div><span class="eyebrow">РАБОЧАЯ ОБЛАСТЬ</span><h2 id="settings-title">Настройки</h2></div><button class="icon-button close-dialog" aria-label="Закрыть настройки"><svg><use href="#i-close"/></svg></button></div>
     <div class="dialog-body">
       <section class="setting-section"><h3>Источники данных</h3><dl class="source-details"><div><dt>Яндекс Диск</dt><dd id="disk-detail">Проверяем подключение…</dd></div><div><dt>Предприятие</dt><dd id="enterprise-detail">Не выбрано</dd></div><div><dt>Реестр абонентов</dt><dd id="registry-detail">Не загружен</dd></div><div><dt>Файл потребления</dt><dd id="consumption-detail">Сначала выберите предприятие</dd></div></dl><p id="source-setup-message" class="hint" role="status"></p><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Проверить подключение и обновить</button></section>
-      <section class="setting-section"><h3>Чтение файлов</h3><p class="hint">Ссылка на общую папку задаётся администратором в Амвере. Названия предприятий читаются из вложенных папок.</p><p class="hint">Для поиска используется самый свежий реестр Excel. Файл «Потребление» определяется отдельно; его анализ будет подключён на следующем этапе.</p></section>
+      <section class="setting-section"><h3>Чтение файлов</h3><p class="hint">Ссылка на общую папку задаётся администратором в Амвере. Названия предприятий читаются из вложенных папок.</p><p class="hint">Для поиска используется только «Расширенный список.xls». Остальные файлы видны в списке ниже, но не загружаются и не участвуют в поиске.</p><details id="other-files"><summary>Другие файлы <span id="other-files-count">0</span></summary><ul id="other-files-list"><li>Сначала выберите предприятие</li></ul></details></section>
       <div class="setting-section" id="mapping-section" hidden><h3>Проверьте столбцы</h3><p class="hint">Убедитесь, что приложение правильно определило номера ПУ и лицевых счетов.</p><div id="mapping-fields"></div><div id="mapping-warning" class="notice" hidden></div><button id="confirm-mapping" class="primary full-width">Использовать реестр</button></div>
       <div id="settings-message" class="form-message" role="status" hidden></div>
-      <div class="local-source"><div><strong>Excel на устройстве</strong><p class="hint">Открыть файл для поиска на этом устройстве.</p></div><label class="secondary file-upload"><svg><use href="#i-file"/></svg>Выбрать файл<input id="local-file" type="file" accept=".xlsx,.xls,.xlsm,.csv" class="sr-only"></label></div>
+      <div class="local-source"><div><strong>Excel на устройстве</strong><p class="hint">Открыть «Расширенный список.xls» на этом устройстве.</p></div><label class="secondary file-upload"><svg><use href="#i-file"/></svg>Выбрать файл<input id="local-file" type="file" accept=".xls" class="sr-only"></label></div>
       <p class="privacy-note">Реестр обрабатывается на вашем устройстве и не сохраняется в приложении. Запоминается только выбранное предприятие и настройки поиска.</p>
     </div>
   </dialog>
-  <dialog id="record-dialog" class="record-dialog"><div class="dialog-header"><div><span class="eyebrow">КАРТОЧКА АБОНЕНТА</span><h2>Данные реестра</h2></div><button class="icon-button close-dialog" aria-label="Закрыть карточку"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body" id="record-body"></div></dialog>
+  <dialog id="tp-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="tp-title">
+    <div class="dialog-header"><div><button type="button" class="dialog-back" id="tp-back" hidden>К выбору ТП</button><h2 id="tp-title">Выберите ТП</h2><p class="registry-meta" id="tp-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть поиск по ТП"><svg><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body" id="tp-body">
+      <div id="tp-picker"><label class="sr-only" for="tp-filter">Найти ТП в списке</label><div class="search-input-wrap tp-filter-wrap"><svg><use href="#i-search"/></svg><input id="tp-filter" type="search" placeholder="Найти ТП в списке" autocomplete="off"></div><div class="choice-list" id="tp-list"></div></div>
+      <div id="tp-register" hidden><div id="tp-missing" class="notice" hidden></div><div class="meter-list" id="tp-meters"></div><button type="button" class="secondary show-more" id="tp-more" hidden>Показать ещё ПУ</button></div>
+      <p class="form-message" id="tp-message" role="status" hidden></p>
+    </div>
+    <button type="button" class="scroll-top" data-scroll-top aria-label="Наверх списка ПУ" hidden><svg><use href="#i-up"/></svg></button>
+  </dialog>
+  <dialog id="search-results-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="search-modal-title">
+    <div class="dialog-header"><div><h2 id="search-modal-title">Результаты поиска</h2><p class="registry-meta" id="search-modal-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть результаты поиска"><svg><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body"><div id="search-modal-results"></div><button class="secondary show-more" id="show-more" hidden>Показать ещё</button></div>
+    <button type="button" class="scroll-top" data-scroll-top aria-label="Наверх результатов" hidden><svg><use href="#i-up"/></svg></button>
+  </dialog>
+  <dialog id="record-dialog" class="record-dialog" aria-labelledby="record-title"><div class="dialog-header"><div><button type="button" class="dialog-back" id="record-back" hidden>К списку ПУ</button><span class="eyebrow">КАРТОЧКА АБОНЕНТА</span><h2 id="record-title">Данные реестра</h2></div><button class="icon-button close-dialog" aria-label="Закрыть карточку"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body" id="record-body"></div></dialog>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

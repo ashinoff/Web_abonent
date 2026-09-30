@@ -5,7 +5,7 @@ let sourceSheets = [], sheets = [], index = null;
 self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
-    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers } = await core;
+    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {
       sourceSheets = []; sheets = []; index = null;
@@ -40,6 +40,9 @@ self.onmessage = async ({ data }) => {
     } else if (action === 'search') {
       if (!index) throw new Error('Сначала откройте реестр.');
       self.postMessage({ id, result: search(index, payload) });
+    } else if (action === 'tps' || action === 'tpMeters') {
+      if (!index) throw new Error('Сначала откройте реестр.');
+      self.postMessage({ id, result: action === 'tps' ? listTPs(index) : metersByTP(index, payload) });
     } else if (action === 'record') {
       const record = index?.records.find(r => r.id === payload.id);
       if (!record) throw new Error('Запись не найдена.');

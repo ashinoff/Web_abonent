@@ -1,4 +1,6 @@
-// Consumption workbooks are reserved for a separate workflow, never subscriber search.
+export const REGISTRY_NAME = 'Расширенный список.xls';
+export const isRegistryFile = name => String(name).normalize('NFKC').trim().toLocaleLowerCase('ru-RU') === REGISTRY_NAME.toLocaleLowerCase('ru-RU');
+// Other files may be listed, but are never used as the subscriber registry.
 export function isConsumptionFile(name) {
   const base = String(name).normalize('NFKC').replace(/\.[^.]+$/, '').toLocaleLowerCase('ru-RU').trim();
   return /(^|[^\p{L}])потребление([^\p{L}]|$)/u.test(base);
@@ -10,5 +12,5 @@ function newestWorkbook(items, consumption) {
 }
 
 // These sources remain separate: finding consumption never adds it to subscriber search.
-export function newestRegistry(items) { return newestWorkbook(items, false); }
+export function findRegistry(items) { return items.find(item => item.type === 'file' && isRegistryFile(item.name)) || null; }
 export function newestConsumption(items) { return newestWorkbook(items, true); }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from '@e965/xlsx';
-import { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers } from '../public/core.js';
+import { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } from '../public/core.js';
 import { demo } from '../public/demo.js';
 
 test('leading zeroes, exact matches, duplicates and partial lookup', () => {
@@ -84,4 +84,32 @@ test('25,000 rows across sheets are indexed and paginated correctly', () => {
   const page = search(index,{query:'000',partial:true,offset:30,limit:30});
   assert.equal(page.records.length,30);
   console.log(`25,001 rows: parse + index + exact lookup ${(performance.now()-start).toFixed(1)} ms (Node, not phone benchmark)`);
+});
+test('TP count deduplicates meters across sheets but retains accounts, points and source rows', () => {
+  const head = ['ЛС','Номер ПУ','ТП','ТУ','Номер ТУСТЕК','Номер ТУ'];
+  const a = parseMatrix([head,
+    ['001','00001','ТП-10','Здание','000701','77'],
+    ['001','00002','ТП-10','Второй ввод','000702','78'],
+    ['002','','ТП-10','Без ПУ','000703','79'],
+    ['003','00001','ТП-2','Другой источник','000704','80'],
+    ['004','00004','','Без ТП','000705','81']], {sheet:'А'});
+  const b = parseMatrix([head, ['005','000 01',' тп-10 ','Пристройка','000706','82']], {sheet:'Б'});
+  const index = buildIndex([a,b]), tps = listTPs(index);
+  assert.deepEqual(tps.map(t=>[t.name,t.total,t.missingMeters]), [['ТП-2',1,0],['ТП-10',2,1]]);
+  const result = metersByTP(index,{key:'тп-10'});
+  assert.equal(result.total,2); assert.equal(result.missingMeters,1);
+  assert.equal(result.meters[0].meter,'00001');
+  assert.deepEqual(result.meters[0].variants.map(v=>[v.account,v.point,v.pointName]), [['001','000701','Здание'],['005','000706','Пристройка']]);
+  assert.equal(result.meters[1].variants[0].account,'001');
+  assert.equal(search(index,{query:'0000',partial:true}).total,5);
+  assert.throws(()=>metersByTP(index,{key:'нет'}),/ТП не найдена/);
+});
+test('a 200-meter TP register paginates without losing or counting repeated rows', () => {
+  const rows = [['ЛС','Номер ПУ','ТП'], ...Array.from({length:200},(_,i)=>['001',String(i).padStart(8,'0'),'ТП-1'])];
+  rows.push(rows[1]);
+  const index=buildIndex([parseMatrix(rows)]);
+  const a=metersByTP(index,{key:'тп-1'}), b=metersByTP(index,{key:'тп-1',offset:100});
+  assert.equal(a.total,200); assert.equal(a.meters.length,100); assert.equal(b.meters.length,100);
+  assert.equal(new Set([...a.meters,...b.meters].map(m=>m.meter)).size,200);
+  assert.equal(a.meters[0].variants.length,2);
 });
