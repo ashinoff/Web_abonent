@@ -26,11 +26,11 @@ for (const bookType of ['biff8', 'xlsx']) test(`${bookType}: preserve both TU nu
   assert.equal(result.result.total, 70); assert.equal(result.selectedPoint, true);
 });
 
-test('LS + TU name isolates the selected card, tariffs add once, TP keeps every distinct TU', () => {
+test('LS + TU selects all input rows, tariffs add once, TP keeps every distinct TU', () => {
   const a = row('001', 'Котельная', 100), night = row('001', 'Котельная', 30, 'Ночная');
   const b = row('001', 'Мастерская', 50), other = row('002', 'Котельная', 20);
-  const model = indexMonthly({ months, rows: [a, { ...a }, night, b, other], warnings: [] });
-  assert.equal(model.duplicates, 1); assert.equal(model.rows.length, 4);
+  const model = indexMonthly({ months, rows: [a, { ...a, source: 'Ввод 2' }, night, b, other], warnings: [] });
+  assert.equal(model.rows.length, 5);
   const records = parseMatrix([
     ['ЛС', 'Номер ПУ', 'ТУ', 'Номер ТУСТЕК', 'Максимальная мощность', 'ТП'],
     ['001', '01001', 'Котельная', '07001', '10', 'ТП-1'],
@@ -39,20 +39,61 @@ test('LS + TU name isolates the selected card, tariffs add once, TP keeps every 
   ]).records;
   const service = createAnalysisService(model, records);
   const selected = service.consumer('009', {}, null, { point: '07001', pointName: '  КОТЕЛЬНАЯ ' });
-  assert.equal(selected.result.total, 130 * 24); assert.equal(selected.result.meter.power, 10);
-  assert.equal(selected.result.meter.pointCount, 1); assert.equal(selected.result.meter.rowCount, 2);
+  assert.equal(selected.result.total, 230 * 24); assert.equal(selected.result.meter.power, 10);
+  assert.equal(selected.result.meter.pointCount, 1); assert.equal(selected.result.meter.rowCount, 3);
   assert.equal(service.consumer('001', {}, null, records[1].fields).result.total, 50 * 24);
   assert.equal(service.consumer('001', {}, null, records[1].fields).result.meter.power, 20);
   const contour = service.contour('ТП-1', {});
-  assert.equal(contour.total, 200 * 24); assert.equal(contour.pointCount, 3);
+  assert.equal(contour.total, 300 * 24); assert.equal(contour.pointCount, 3);
   assert.equal(contour.results.length, 2); assert.equal(contour.meterCount, 3);
   assert.throws(() => service.consumer('001', {}, null, { point: '07001' }), /несколько точек/);
   assert.throws(() => service.consumer('001', {}, null, { point: '07001', pointName: 'Неизвестная ТУ' }), /ЛС \+ ТУ не найдена/);
   assert.throws(() => service.consumer('001', {}, null, {}), /не указана ТУ/);
 });
 
-test('different TU names survive without STEK; conflicting copies of the same LS + TU still require correction', () => {
+test('TU names without STEK still distinguish points and allow multiple input rows', () => {
   const a = { ...row('001', 'Котельная', 100), point: '' }, b = { ...row('001', 'Мастерская', 200), point: '' };
   assert.equal(indexMonthly({ months, rows: [a, b], warnings: [] }).rows.length, 2);
-  assert.throws(() => indexMonthly({ months, rows: [a, { ...a, values: Array(24).fill(200) }], warnings: [] }), /одна и та же ТУ.*разными объёмами/);
+  const model = indexMonthly({ months, rows: [a, { ...a, values: Array(24).fill(200) }, b], warnings: [] });
+  assert.equal(createAnalysisService(model).consumer('001', {}, null, {pointName:'Котельная'}).result.total,300*24);
+});
+
+for (const bookType of ['biff8', 'xlsx']) test(`${bookType}: alternating and equal input volumes add within one TU`, () => {
+  const header = ['ЛС/Номер договора', 'Номер точки учета СТЕК', 'ТУ', 'ТП', 'Тарифная зона', 'Итого ПО январь 2026', 'Итого ПО февраль 2026', 'Итого ПО март 2026', 'Итого ПО апрель 2026'];
+  const matrix = [header,
+    ['001','07001','Котельная','ТП-1','Однозонный',100,0,30,40],
+    ['001','07001','Котельная','ТП-1','Однозонный',0,120,30,40],
+    ['001','07002','Мастерская','ТП-1','Однозонный',5,5,5,5],
+  ];
+  const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(matrix), 'ПО');
+  const model = indexMonthly(readMonthlyWorkbook(XLSX.write(book, {type:'buffer',bookType}), XLSX));
+  const records = parseMatrix([['ЛС','ТУ','Номер ТУСТЕК','Номер ПУ','ТП','Максимальная мощность','Коэф ТТ'],
+    ['001','Котельная','07001','01001','ТП-1',50,60], ['001','Котельная','07001','01002','ТП-1',50,60],
+    ['001','Мастерская','07002','01003','ТП-1',10,1],
+  ]).records;
+  const service = createAnalysisService(model, records);
+  for (const record of records.slice(0,2)) {
+    const result = service.consumer('001', {}, null, record.fields).result;
+    assert.deepEqual(result.meter.values,[100,120,60,80]); assert.equal(result.total,360);
+    assert.equal(result.meter.pointCount,1); assert.equal(result.meter.rowCount,2); assert.equal(result.meter.power,50);
+    assert.deepEqual(result.meter.sources,['ПО:2','ПО:3']);
+  }
+  const contour = service.contour('ТП-1', {});
+  assert.deepEqual(contour.values,[105,125,65,85]); assert.equal(contour.total,380);
+  assert.equal(contour.pointCount,2); assert.equal(contour.results.length,1); assert.equal(contour.meterCount,3);
+});
+
+test('one TU with inputs from two TPs sums individually and splits correctly by contour', () => {
+  const a = {...row('001','Котельная',0), values:months.map((_,i)=>i%2?0:100)}, b = {...a,tp:'ТП-2',values:months.map((_,i)=>i%2?120:0)};
+  const service = createAnalysisService(indexMonthly({months,rows:[a,b],warnings:[]}));
+  assert.deepEqual(service.consumer('001', {}, null, {point:'07001',pointName:'Котельная'}).result.meter.values,months.map((_,i)=>i%2?120:100));
+  assert.equal(service.contour('ТП-1', {}).total,1200); assert.equal(service.contour('ТП-2', {}).total,1440);
+});
+
+test('flags and recommendations use the combined monthly history, not each input separately', () => {
+  const a={...row('001','Котельная',0),values:months.map((_,i)=>i<12?1000:0)}, b={...a,values:months.map((_,i)=>i<12?0:1000)};
+  const analyse=rows=>createAnalysisService(indexMonthly({months,rows,warnings:[]})).consumer('001',{},null,{point:'07001',pointName:'Котельная'}).result;
+  const actual=analyse([a,b]), reference=analyse([{...a,values:Array(24).fill(1000)}]);
+  assert.deepEqual(actual.meter.values,reference.meter.values); assert.deepEqual(actual.flags,reference.flags);
+  assert.equal(actual.score,reference.score); assert.equal(actual.lossKwh,reference.lossKwh); assert.equal(actual.total,24000);
 });

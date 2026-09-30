@@ -123,28 +123,19 @@ export function readMonthlyWorkbook(buffer, XLSX) {
   result.warnings.push(...errors);
   return result;
 }
-// Collapse equal LS + TU + TP + tariff rows only. Distinct TUs under one LS
-// remain independent even when they share the same STEK identifier.
+// Each report row is an additive input/meter volume, including equal rows of
+// the same LS + TU. Keep all rows and their origins; strictSum combines them
+// month by month when analysing a TU, account or the selected TP contour.
 export function indexMonthly(parsed) {
-  const unique = new Map(), accounts = new Map(), aliases = new Map(); let duplicates = 0;
+  const accounts = new Map(), aliases = new Map();
   for (const row of parsed.rows) {
-    const tu = accountPointKey(row);
-    const identity = tu ? JSON.stringify([tu, tpKey(row.tp), norm(row.zone)]) : null;
-    if (identity && unique.has(identity)) {
-      const old = unique.get(identity);
-      if (JSON.stringify(old.values) !== JSON.stringify(row.values)) throw new Error(`У ЛС ${row.account} повторяется одна и та же ТУ «${[row.pointNumber, row.pointName, row.point && 'СТЕК ' + row.point].filter(Boolean).join(' · ')}» с разными объёмами (${old.source}, ${row.source}). Проверьте эти строки выгрузки.`);
-      duplicates++; continue;
-    }
-    if (identity) unique.set(identity, row);
     if (!accounts.has(row.accountKey)) accounts.set(row.accountKey, []);
     accounts.get(row.accountKey).push(row);
     for (const alias of [row.accountKey, idKey(row.alias)].filter(Boolean)) {
       if (!aliases.has(alias)) aliases.set(alias, new Set()); aliases.get(alias).add(row.accountKey);
     }
   }
-  const warnings = [...parsed.warnings];
-  if (duplicates) warnings.push(`Точных повторов строк точек учёта исключено: ${duplicates}.`);
-  return { ...parsed, rows: [...accounts.values()].flat(), accounts, aliases, warnings, duplicates };
+  return { ...parsed, accounts, aliases };
 }
 export function strictSum(rows, n) {
   return Array.from({ length: n }, (_, i) => rows.length && rows.every(r => r.values[i] != null) ? rows.reduce((s, r) => s + r.values[i], 0) : null);

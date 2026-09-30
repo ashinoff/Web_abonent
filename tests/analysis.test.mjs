@@ -27,11 +27,11 @@ for(const bookType of ['biff8','xlsx']) test(`real ${bookType} decoding: exact a
   const ws=XLSX.utils.aoa_to_sheet(matrix());ws.A5={t:'n',v:1,z:'000000'};const book=XLSX.utils.book_new();XLSX.utils.book_append_sheet(book,ws,'ПО');
   const p=readMonthlyWorkbook(XLSX.write(book,{type:'buffer',bookType}),XLSX);assert.equal(p.rows[0].account,'000001');assert.equal(p.rows[0].values[0],909);assert.equal(p.rows[0].values[26],0);
 });
-test('deduplicate identical point/tariff rows; reject conflicting copies; keep distinct tariff zones',()=>{
+test('same-TU input rows stay additive even with equal values and equal tariff zones',()=>{
   const a=row('001','P1','ТП-1',Array(27).fill(10));
-  const p=indexMonthly({months,rows:[a,{...a}],warnings:[]});assert.equal(p.rows.length,1);assert.equal(p.duplicates,1);
-  assert.throws(()=>indexMonthly({months,rows:[a,{...a,values:Array(27).fill(20)}],warnings:[]}),/разными объёмами/);
-  assert.equal(indexMonthly({months,rows:[a,{...a,zone:'Ночная'}],warnings:[]}).rows.length,2);
+  const p=indexMonthly({months,rows:[a,{...a,alias:'009'},{...a,values:Array(27).fill(20)},{...a,zone:'Ночная'}],warnings:[]});
+  assert.equal(p.rows.length,4);assert.deepEqual(strictSum(p.accounts.get('001'),27),Array(27).fill(50));
+  assert.equal(p.aliases.get('009').has('001'),true);assert.deepEqual(p.warnings,[]);
 });
 test('LS aggregates points exactly once; TP isolates its portion and never multiplies by TT',()=>{
   const a=row('001','P1','ТП-1',Array(27).fill(100),'009'),b=row('001','P2','ТП-2',Array(27).fill(50)),c=row('002','P3','ТП-1',Array(27).fill(20));
