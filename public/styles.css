@@ -129,3 +129,73 @@ dialog.swiping{user-select:none;transition:none}
  .meter-item{padding:16px}
  .registry-dialog .result-numbers{margin-left:16px;margin-right:16px}
 }
+
+/* Quiet action colours, while source readiness remains explicit. */
+#search-submit{background:#d7e7f2;color:#2c5674;border:1px solid #bcd2e2;box-shadow:0 3px 9px #355b7d09}
+#search-submit:hover{background:#cbdfea}
+#tp-open{background:#e0ece5;color:#35624a;border:1px solid #bfd5c7;box-shadow:0 3px 9px #355d4606}
+#tp-open:hover{background:#d3e4da}
+.contour-button{width:100%;min-height:46px;margin-top:10px;display:flex;gap:10px;font-size:14px;line-height:1.4;padding:11px 13px;text-align:left}
+.contour-button:disabled{opacity:1;background:#eef2f4;color:#70818e;border:1px solid #dce4e9;cursor:default}
+.contour-button>svg{flex:0 0 20px}
+.contour-button .soon-badge{background:#f9fbfc;color:#768793}
+#source-name[data-state="missing"]{color:#a9535f}
+#source-name[data-state="ready"]{color:#377658}
+.analysis-button:disabled{background:#faeadb;border-color:#ecd4be;color:#91613b;box-shadow:none}
+.analysis-button .soon-badge{background:#fff7ee;color:#9b7556}
+
+/* A fixed header holds the search on both levels of the TP register. */
+#tp-dialog .tp-header{display:block;padding-bottom:18px}
+.tp-header-top{display:flex;align-items:flex-start;gap:12px}
+.tp-header-copy{flex:1;min-width:0}
+.tp-header-top .tp-back{flex:0 0 40px;margin-top:-4px;background:#edf3f9;color:#446783;border-radius:11px}
+.tp-header-top .tp-back svg{width:20px;height:20px}
+.tp-header .tp-filter-wrap{margin:17px 0 0}
+.tp-header .tp-filter-wrap input{height:48px;background:#f7faff;font-size:16px;border-color:#d7e2ee}
+.tp-filter-count{display:block;font-size:13px;margin-top:3px;color:#4c718e}
+
+/* Only the surface moves; a previous view can stay underneath it. */
+dialog{--swipe-progress:0;background:transparent}
+.dialog-surface{position:relative;z-index:1;display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;height:100%;border-radius:inherit;background:#fff;overflow:hidden}
+.dialog-surface>.dialog-body{flex:1 1 auto;min-height:0}
+dialog::backdrop{background:rgb(14 37 56 / calc(.41 * (1 - var(--swipe-progress))));backdrop-filter:blur(calc(3px * (1 - var(--swipe-progress))))}
+dialog.swiping>.dialog-surface,dialog.swipe-settling>.dialog-surface{will-change:transform;user-select:none}
+dialog.swipe-settling>.dialog-surface{pointer-events:none}
+dialog.swipe-settling::backdrop{transition:background .26s ease,backdrop-filter .26s ease}
+.dialog-surface.swipe-underlay{position:absolute;inset:0;z-index:0;pointer-events:none}
+dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3px)}
+
+/* The same tone is used for each kind of information, including empty fields. */
+[data-tone="account"]{--section-bg:#edf3fc;--section-line:#d8e3f3;--section-ink:#456184}
+[data-tone="point"]{--section-bg:#f3eff8;--section-line:#e2daed;--section-ink:#736184}
+[data-tone="address"]{--section-bg:#f8f3e9;--section-line:#e9dfcb;--section-ink:#816e48}
+[data-tone="connection"]{--section-bg:#edf5ef;--section-line:#d7e7dc;--section-ink:#49735a}
+[data-tone="meter"]{--section-bg:#eaf4f6;--section-line:#d2e6e9;--section-ink:#42727b}
+[data-tone="events"]{--section-bg:#fff0e6;--section-line:#efdccc;--section-ink:#956b49}
+[data-tone="calculated"]{--section-bg:#f2f4e9;--section-line:#e0e5cd;--section-ink:#747d4e}
+[data-tone="tt"]{--section-bg:#f1effa;--section-line:#dfdaf0;--section-ink:#736692}
+[data-tone="tn"]{--section-bg:#faeef2;--section-line:#efd9e1;--section-ink:#956879}
+[data-tone="other"]{--section-bg:#f1f4f7;--section-line:#dfe6ed;--section-ink:#63768a}
+.record-sections{display:grid;gap:16px;margin-top:22px}
+.record-section{min-width:0;background:var(--section-bg);border:1px solid var(--section-line);border-radius:13px;padding:17px 18px 7px}
+.record-section h3{font-size:16px;font-weight:650;line-height:1.4;color:var(--section-ink);margin:0 0 5px}
+.record-section dl{margin:0}
+.record-section .detail-row{grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:18px;border-color:var(--section-line);padding:11px 0;font-size:14px;line-height:1.55}
+.record-section .detail-row:last-child{border-bottom:0}
+.record-section dt{color:#586b82}
+.record-section dd{color:#253e56}
+.empty-fields{margin-top:20px;border-top:1px solid #e1e7ef;padding-top:16px}
+.empty-fields>summary{font-size:14px;color:#617894;cursor:pointer;padding:6px 0}
+.empty-fields .record-sections{margin-top:12px}
+.record-main-numbers{background:transparent;padding:0;gap:10px}
+.record-main-numbers .quick-metric{min-width:0;padding:14px 12px;background:var(--section-bg);border:1px solid var(--section-line);border-radius:10px}
+.record-main-numbers .quick-point{background:#f3eff8;border:1px solid #e2daed;border-radius:10px;padding:13px 14px}
+.record-main-numbers .transformer-ratio{background:#eaf4f6;border:1px solid #d2e6e9;border-radius:10px;padding:11px 14px}
+@media(max-width:700px){
+ .tp-header-top{gap:10px}
+ #tp-dialog .tp-header{padding-bottom:16px}
+ .record-section{padding:15px 14px 6px}
+ .record-section .detail-row{gap:13px;font-size:14px}
+ .record-main-numbers .quick-metric .number-value{font-size:16px}
+}
+@media(prefers-reduced-motion:reduce){dialog.swipe-settling::backdrop{transition:none}}

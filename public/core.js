@@ -133,11 +133,15 @@ export function listTPs(index) {
   return [...index.tp.values()].map(({ key, name, meters, missingMeters }) => ({ key, name, total: meters.size, missingMeters }))
     .sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
 }
-export function metersByTP(index, { key, offset = 0, limit = 100 }) {
+export function metersByTP(index, { key, query = '', offset = 0, limit = 100 }) {
   const tp = index.tp.get(key);
   if (!tp) throw new Error('ТП не найдена в текущем реестре.');
-  const groups = [...tp.meters.values()].sort((a, b) => index.records[a[0]].fields.meter.localeCompare(index.records[b[0]].fields.meter, 'ru', { numeric: true }));
-  return { key: tp.key, name: tp.name, total: groups.length, missingMeters: tp.missingMeters,
+  const q = norm(query), numberQuery = idKey(query);
+  const groups = [...tp.meters.values()].filter(ids => !q || ids.some(i => {
+    const r = index.records[i];
+    return r.meterKey.includes(numberQuery) || r.accountKey.includes(numberQuery) || norm([r.fields.point, r.fields.pointNumber, r.fields.pointName, r.fields.name, r.address].filter(Boolean).join(' ')).includes(q);
+  })).sort((a, b) => index.records[a[0]].fields.meter.localeCompare(index.records[b[0]].fields.meter, 'ru', { numeric: true }));
+  return { key: tp.key, name: tp.name, total: groups.length, totalInTP: tp.meters.size, missingMeters: tp.missingMeters,
     meters: groups.slice(offset, offset + Math.min(limit, 200)).map(ids => {
       const rows = ids.map(i => index.records[i]);
       return { meter: rows[0].fields.meter, variants: rows.map(r => ({ id: r.id, account: r.fields.account || '', point: r.fields.point || r.fields.pointNumber || '', pointName: r.fields.pointName || '', name: r.fields.name || '', address: r.address, sheet: r.sheet, row: r.row })) };

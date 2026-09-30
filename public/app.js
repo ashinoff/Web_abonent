@@ -2,6 +2,7 @@ import { clean, norm } from './core.js';
 import { demo } from './demo.js';
 import { findRegistry, newestConsumption, isRegistryFile, REGISTRY_NAME } from './source.js';
 import { attachDialogSwipe } from './gestures.js';
+import { groupRecordFields } from './record-sections.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -21,6 +22,8 @@ let summary = null, pending = null, currentSource = null, isDemo = false, busy =
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 let otherFiles = [], tpChoices = [], tpSelection = null, tpMeters = [], tpVersion = 0, tpBusy = false, recordVersion = 0;
 let recordContext = { parent: null, variants: [] };
+let tpViewKey = '', tpPickerQuery = '', tpPickerScroll = 0, tpFilterTimer = null;
+const dialogControls = new Map();
 const requests = new Map();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
@@ -84,6 +87,7 @@ function renderIndicators() {
   $('#enterprise-detail').textContent = selectedFolder?.name || 'Не выбрано';
   $('#registry-detail').textContent = currentSource?.type === 'local' ? currentSource.name + ' · с устройства' : currentSource?.type === 'demo' ? 'Демонстрационный реестр' : (selectedFile ? selectedFile.name + ' · ' : '') + registryText;
   $('#consumption-detail').textContent = consumptionText;
+  $('#source-name').dataset.state = summary && (currentSource?.type !== 'disk' || registryState === 'ready') ? 'ready' : 'missing';
   $('#other-files-count').textContent = number(otherFiles.length);
   $('#other-files-list').innerHTML = otherFiles.length ? otherFiles.map(f => `<li>${esc(f.name)} <span>Не используется</span></li>`).join('') : `<li>${selectedFolder ? 'Других файлов нет' : 'Сначала выберите предприятие'}</li>`;
 }
@@ -252,6 +256,7 @@ async function downloadFile() {
 function clearDataset(keepDirectory = false) {
   operation++; searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
   tpVersion++; recordVersion++; tpChoices = []; tpSelection = null; tpMeters = []; tpBusy = false; if (!keepDirectory) otherFiles = [];
+  tpViewKey = ''; tpPickerQuery = ''; tpPickerScroll = 0; clearTimeout(tpFilterTimer);
   for (const id of ['tp-dialog', 'search-results-dialog', 'record-dialog']) $('#' + id).close();
   $('#search-modal-results').replaceChildren(); $('#tp-meters').replaceChildren(); $('#tp-list').replaceChildren(); $('#record-body').replaceChildren();
   $('#mapping-section').hidden = true; $('#search-input').value = ''; $('#clear-query').hidden = true;
@@ -313,8 +318,9 @@ async function startDemo() {
   finally { setBusy(false); }
 }
 function updateSource() {
-  $('#source-name').textContent = currentSource?.name || 'Реестр не подключён';
-  $('#source-meta').textContent = busy && busyText ? busyText : summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : 'Выберите предприятие';
+  $('#source-name').textContent = currentSource?.name || REGISTRY_NAME;
+  $('#source-name').dataset.state = summary && (currentSource?.type !== 'disk' || registryState === 'ready') ? 'ready' : 'missing';
+  $('#source-meta').textContent = busy && busyText ? busyText : summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : pending ? 'Подтвердите столбцы в настройках' : 'Не подключён · выберите предприятие';
   $('#district-label').textContent = currentSource?.folder || selectedFolder?.name || 'Выберите предприятие';
   $('#refresh').hidden = currentSource?.type !== 'disk';
   $('#demo-banner').hidden = !isDemo; $('#example-queries').hidden = !isDemo;
@@ -373,14 +379,33 @@ function renderTPChoices() {
   $('#tp-list').innerHTML = choices.length ? choices.map(tp => `<button type="button" class="choice-item tp-choice" data-tp="${esc(tp.key)}"><span>${esc(tp.name)}</span><span class="tp-count">${number(tp.total)} ПУ</span></button>`).join('') : '<p class="hint">ТП не найдены.</p>';
 }
 function showTPPicker() {
-  tpVersion++; tpBusy = false; tpSelection = null; tpMeters = [];
-  $('#tp-title').textContent = 'Выберите ТП'; $('#tp-meta').textContent = `В реестре: ${number(tpChoices.length)} ТП`;
+  clearTimeout(tpFilterTimer); tpVersion++; tpBusy = false; tpSelection = null; tpMeters = []; tpViewKey = '';
+  $('#tp-filter').value = tpPickerQuery;
+  $('#tp-filter').placeholder = 'Найти ТП в списке'; $('#tp-filter-label').textContent = 'Найти ТП в списке';
+  $('#tp-title').textContent = 'Реестр ТП'; $('#tp-meta').textContent = `В реестре: ${number(tpChoices.length)} ТП`;
   $('#tp-back').hidden = true; $('#tp-picker').hidden = false; $('#tp-register').hidden = true;
-  $('#tp-body').scrollTop = 0; message('#tp-message', ''); renderTPChoices();
+  message('#tp-message', ''); renderTPChoices(); $('#tp-body').scrollTop = tpPickerScroll;
+}
+function prepareTPReturn() {
+  const dialog = $('#tp-dialog'), surface = dialog.querySelector('.dialog-surface');
+  const preview = surface.cloneNode(true);
+  preview.className = 'dialog-surface swipe-underlay'; preview.style.transform = '';
+  preview.querySelector('#tp-back').hidden = true;
+  preview.querySelector('#tp-title').textContent = 'Реестр ТП';
+  preview.querySelector('#tp-meta').textContent = `В реестре: ${number(tpChoices.length)} ТП`;
+  preview.querySelector('#tp-picker').hidden = false; preview.querySelector('#tp-register').hidden = true;
+  preview.querySelector('#tp-filter').value = tpPickerQuery; preview.querySelector('#tp-filter').placeholder = 'Найти ТП в списке';
+  preview.querySelector('#tp-message').hidden = true;
+  preview.querySelector('[data-scroll-top]').hidden = tpPickerScroll < 260;
+  preview.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  preview.inert = true; preview.setAttribute('aria-hidden', 'true');
+  dialog.prepend(preview); preview.querySelector('.dialog-body').scrollTop = tpPickerScroll;
+  dialog.classList.add('has-swipe-underlay');
+  return () => { preview.remove(); dialog.classList.remove('has-swipe-underlay'); };
 }
 async function openTPs() {
   if (!summary || busy) { message('#form-message', 'Сначала подключите реестр предприятия.'); return; }
-  openDialog('tp-dialog'); $('#tp-filter').value = ''; showTPPicker();
+  openDialog('tp-dialog'); tpPickerQuery = ''; tpPickerScroll = 0; showTPPicker();
   const version = tpVersion, op = operation;
   $('#tp-list').innerHTML = '<div class="loading-row"><span class="loading-indicator"></span>Читаем список ТП…</div>';
   try {
@@ -392,16 +417,25 @@ async function openTPs() {
 }
 function renderTPMeters() {
   $('#tp-title').textContent = tpSelection.name;
-  $('#tp-meta').innerHTML = `<strong>${number(tpSelection.total)}</strong> ${subscribersWord(tpSelection.total)} · по уникальным ПУ`;
+  const count = tpSelection.totalInTP;
+  $('#tp-meta').innerHTML = `<strong>${number(count)}</strong> ${subscribersWord(count)} · по уникальным ПУ${clean($('#tp-filter').value) ? `<span class="tp-filter-count">Найдено по запросу: ${number(tpSelection.total)} ПУ</span>` : ''}`;
   const unique = values => [...new Set(values.filter(Boolean))].join(' · ') || '—';
   $('#tp-meters').innerHTML = tpMeters.map((m, i) => `<button type="button" class="meter-item" data-tp-meter="${i}"><span class="meter-item-head"><span class="meter-number"><span class="number-label">Номер ПУ</span><strong>${esc(m.meter)}</strong></span><span class="meter-open-label">Открыть</span></span><span class="meter-details"><span><span class="number-label">Лицевой счёт</span><strong>${esc(unique(m.variants.map(v => v.account)))}</strong></span><span><span class="number-label">Точка учёта</span><strong>${esc(unique(m.variants.map(pointText)))}</strong></span></span><span class="meter-subscriber">${esc(unique(m.variants.map(v => v.name)))}</span>${m.variants.length > 1 ? `<span class="meter-duplicates">${recordsText(m.variants.length)} исходного реестра</span>` : ''}</button>`).join('');
   $('#tp-more').hidden = tpMeters.length >= tpSelection.total;
   $('#tp-missing').hidden = !tpSelection.missingMeters;
   $('#tp-missing').textContent = `Без номера ПУ: ${recordsText(tpSelection.missingMeters)}. Они не входят в количество абонентов по ПУ; их можно найти по ЛС.`;
-  if (!tpSelection.total) $('#tp-meters').innerHTML = '<p class="hint">У этой ТП нет строк с заполненным номером ПУ.</p>';
+  if (!tpSelection.total) $('#tp-meters').innerHTML = `<p class="hint">${clean($('#tp-filter').value) ? 'Совпадений нет. Попробуйте другой номер или часть названия.' : 'У этой ТП нет строк с заполненным номером ПУ.'}</p>`;
 }
 async function selectTP(key, more = false) {
-  if (tpBusy || !summary) return;
+  if (!summary || more && tpBusy) return;
+  clearTimeout(tpFilterTimer);
+  if (key !== tpViewKey) {
+    tpPickerQuery = $('#tp-filter').value; tpPickerScroll = $('#tp-body').scrollTop;
+    tpViewKey = key; $('#tp-filter').value = '';
+    $('#tp-filter').placeholder = 'ПУ, ЛС или точка учёта'; $('#tp-filter-label').textContent = 'Найти ПУ, ЛС или точку учёта в этой ТП';
+    $('#tp-filter').blur();
+  }
+  const query = clean($('#tp-filter').value);
   const version = ++tpVersion, op = operation; tpBusy = true; $('#tp-more').disabled = true;
   if (!more) {
     tpMeters = []; $('#tp-picker').hidden = true; $('#tp-register').hidden = false; $('#tp-back').hidden = false;
@@ -410,12 +444,22 @@ async function selectTP(key, more = false) {
   }
   message('#tp-message', '');
   try {
-    const found = await rpc('tpMeters', { key, offset: more ? tpMeters.length : 0, limit: 100 });
+    const found = await rpc('tpMeters', { key, query, offset: more ? tpMeters.length : 0, limit: 100 });
     if (version !== tpVersion || op !== operation) return;
     tpSelection = found; tpMeters = more ? [...tpMeters, ...found.meters] : found.meters;
     renderTPMeters();
   } catch (error) { if (version === tpVersion) message('#tp-message', error.message); }
   finally { if (version === tpVersion) { tpBusy = false; $('#tp-more').disabled = false; } }
+}
+function renderRecordSections(record) {
+  const groups = groupRecordFields(record.labels, record.values);
+  const render = empty => groups.map(group => {
+    const fields = group.fields.filter(field => Boolean(field.value) !== empty);
+    if (!fields.length) return '';
+    return `<section class="record-section" data-tone="${group.key}"><h3>${esc(group.title)}</h3><dl>${fields.map(field => `<div class="detail-row"><dt title="${esc(field.label)}">${esc(field.displayLabel)}</dt><dd>${esc(field.value || '—')}</dd></div>`).join('')}</dl></section>`;
+  }).join('');
+  const emptyCount = groups.flatMap(group => group.fields).filter(field => !field.value).length;
+  return `<div class="record-sections">${render(false)}</div>${emptyCount ? `<details class="empty-fields"><summary>Пустые поля (${emptyCount})</summary><div class="record-sections">${render(true)}</div></details>` : ''}`;
 }
 let activeRecord = null;
 async function openRecord(id, context = { parent: null, variants: [] }) {
@@ -424,9 +468,7 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     const r = await rpc('record', { id });
     if (version !== recordVersion || op !== operation || context.parent && !$('#' + context.parent).open) return;
     activeRecord = r; recordContext = context;
-    const rows = r.labels.map((label, i) => `<div class="detail-row"><dt>${esc(label)}</dt><dd>${esc(r.values[i] || '—')}</dd></div>`);
-    const populated = rows.filter((_, i) => r.values[i]), blank = rows.filter((_, i) => !r.values[i]);
-    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" type="button" disabled aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span><span class="soon-badge">Скоро</span></button><p class="hint" id="analysis-availability">${currentSource?.type === 'disk' && consumptionFile ? `Файл «${esc(consumptionFile.name)}» найден. Анализ будет доступен на следующем этапе.` : 'Анализ будет доступен на следующем этапе. Для него нужен файл «Потребление» в папке предприятия.'}</p></section><div class="details-title">ВСЕ ПОЛЯ СТРОКИ</div><dl>${populated.join('')}</dl>${blank.length ? `<details><summary class="hint">Пустые поля (${blank.length})</summary><dl>${blank.join('')}</dl></details>` : ''}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
+    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" type="button" disabled aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span><span class="soon-badge">Скоро</span></button><p class="hint" id="analysis-availability">${currentSource?.type === 'disk' && consumptionFile ? `Файл «${esc(consumptionFile.name)}» найден. Анализ будет доступен на следующем этапе.` : 'Анализ будет доступен на следующем этапе. Для него нужен файл «Потребление» в папке предприятия.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
     $('#record-body .record-main-numbers').insertAdjacentHTML('beforeend', pointLine(r));
     if (context.variants.length > 1) {
       $('#record-body').insertAdjacentHTML('afterbegin', `<div class="record-variants"><label for="record-variant">Строки этого ПУ в реестре: ${context.variants.length}</label><select id="record-variant">${context.variants.map(v => `<option value="${esc(v.id)}" ${v.id === id ? 'selected' : ''}>${esc([pointText(v), 'ЛС ' + (v.account || '—'), v.sheet + ', строка ' + v.row].join(' · '))}</option>`).join('')}</select></div>`);
@@ -440,10 +482,12 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
 }
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises);
 document.addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('[data-open-enterprises]')) showEnterprises(); });
-document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => dialogControls.get(button.closest('dialog').id).dismiss()));
 document.querySelectorAll('dialog').forEach(dialog => {
-  attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.close(), canGoBack: () => dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open) });
-  dialog.addEventListener('click', e => { if (e.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) dialog.close(); });
+  const controls = attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.id === 'tp-dialog' ? showTPPicker() : dialog.close(), canGoBack: () => dialog.id === 'tp-dialog' ? Boolean(tpViewKey) : dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open), prepareBack: dialog.id === 'tp-dialog' ? prepareTPReturn : null });
+  dialogControls.set(dialog.id, controls);
+  dialog.addEventListener('cancel', e => { e.preventDefault(); controls.dismiss(); });
+  dialog.addEventListener('click', e => { if (e.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) controls.dismiss(); });
   const top = dialog.querySelector('[data-scroll-top]'), body = dialog.querySelector('.dialog-body');
   if (top) {
     body.addEventListener('scroll', () => { top.hidden = body.scrollTop < 260; }, { passive: true });
@@ -452,12 +496,16 @@ document.querySelectorAll('dialog').forEach(dialog => {
   }
 });
 $('#record-dialog').addEventListener('close', () => { recordVersion++; activeRecord = null; });
-$('#tp-dialog').addEventListener('close', () => { tpVersion++; tpBusy = false; });
-$('#record-back').addEventListener('click', () => $('#record-dialog').close());
+$('#tp-dialog').addEventListener('close', () => { clearTimeout(tpFilterTimer); tpVersion++; tpBusy = false; });
+$('#record-back').addEventListener('click', () => dialogControls.get('record-dialog').goBack());
 $('#record-body').addEventListener('change', e => { if (e.target.id === 'record-variant') openRecord(e.target.value, recordContext); });
 $('#tp-open').addEventListener('click', openTPs);
-$('#tp-back').addEventListener('click', showTPPicker);
-$('#tp-filter').addEventListener('input', renderTPChoices);
+$('#tp-back').addEventListener('click', () => dialogControls.get('tp-dialog').goBack());
+$('#tp-filter').addEventListener('input', () => {
+  clearTimeout(tpFilterTimer);
+  if (!tpViewKey) { tpPickerQuery = $('#tp-filter').value; tpPickerScroll = 0; $('#tp-body').scrollTop = 0; renderTPChoices(); }
+  else { tpVersion++; tpFilterTimer = setTimeout(() => selectTP(tpViewKey), 160); }
+});
 $('#tp-list').addEventListener('click', e => { const b = e.target.closest('[data-tp]'); if (b) selectTP(b.dataset.tp); });
 $('#tp-more').addEventListener('click', () => selectTP(tpSelection.key, true));
 $('#tp-meters').addEventListener('click', e => { const b = e.target.closest('[data-tp-meter]'); if (!b) return; const meter = tpMeters[Number(b.dataset.tpMeter)]; openRecord(meter.variants[0].id, { parent: 'tp-dialog', variants: meter.variants }); });

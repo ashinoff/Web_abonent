@@ -112,4 +112,8 @@ test('a 200-meter TP register paginates without losing or counting repeated rows
   assert.equal(a.total,200); assert.equal(a.meters.length,100); assert.equal(b.meters.length,100);
   assert.equal(new Set([...a.meters,...b.meters].map(m=>m.meter)).size,200);
   assert.equal(a.meters[0].variants.length,2);
+  const filtered=metersByTP(index,{key:'тп-1',query:'00000199'});
+  assert.equal(filtered.totalInTP,200); assert.equal(filtered.total,1);
+  assert.equal(filtered.meters[0].meter,'00000199');
+  assert.equal(metersByTP(index,{key:'тп-1',query:'несуществующий'}).total,0);
 });
