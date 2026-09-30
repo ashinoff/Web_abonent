@@ -39,6 +39,10 @@ test('Amvera environment supplies the shared source; query parameters cannot rep
     assert.equal((await clientFetch(root+'/api/resources?path=/District')).status,200);
     assert.equal(upstream.searchParams.get('public_key'),config.publicUrl);
     assert.equal(upstream.searchParams.get('path'),'/District');
+    const nested = '/Сочинские ЭС/Дагомысский РЭС/По по месячно.xls';
+    assert.equal((await clientFetch(root+'/api/resources?path='+encodeURIComponent(nested))).status,200);
+    assert.equal(upstream.searchParams.get('path'),nested);
+    assert.equal(upstream.searchParams.get('public_key'),config.publicUrl);
     await clientFetch(root+'/api/resources?public_key=https://disk.yandex.ru/d/OtherRoot');
     assert.equal(upstream.searchParams.get('public_key'),config.publicUrl);
   } finally {

@@ -5,6 +5,10 @@ let sourceSheets = [], sheets = [], index = null;
 self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
+    if (action === 'checkConsumption') {
+      const { inspectMonthlyWorkbook } = await import('./workbook-check.js');
+      self.postMessage({ id, result: inspectMonthlyWorkbook(payload.buffer, XLSX) }); return;
+    }
     const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {

@@ -58,12 +58,21 @@ html:has(dialog[open]){overflow:hidden}
 }
 
 /* The enterprise is a primary control, separate from the search form. */
-.enterprise-toolbar{display:flex;margin-bottom:24px}
+.enterprise-toolbar{display:flex;flex-direction:column;gap:10px;margin-bottom:24px}
 .district-button{position:static;right:auto;bottom:auto;min-height:68px;width:390px;max-width:100%;margin:0;justify-content:space-between;gap:18px;padding:14px 18px;background:#fff;color:var(--navy);border:1.5px solid #98b5da;border-radius:12px;box-shadow:0 3px 12px #183e6b09}
 .district-button:hover{background:#edf4ff;border-color:#5e8fc8}
 .enterprise-button-copy{display:grid;gap:5px;min-width:0}
 .enterprise-caption{font-size:12px;font-weight:400;line-height:1.4;color:#657b97}
-#district-label{font-size:17px;font-weight:650;line-height:1.35;color:#112c4e}
+#district-label,#res-label{font-size:17px;font-weight:650;line-height:1.35;color:#112c4e}
+.res-button{background:#f8fbff;border-color:#c3d3e5;min-height:62px}
+.res-button:disabled{opacity:1;background:#f2f5f9;border-color:#dce4ed;cursor:default}
+.res-button:disabled #res-label,.res-button:disabled .small-chevron{color:#8a99aa}
+.record-header{align-items:flex-start;gap:12px}
+.record-header-copy{flex:1;min-width:0}
+.back-arrow{background:#edf3f9;color:#446783;border-radius:11px;margin-top:3px;flex:0 0 40px}
+.back-arrow svg{width:20px;height:20px}
+.record-header .eyebrow{font-size:10px;letter-spacing:1px}
+.record-header h2{font-size:22px}
 .district-button .small-chevron{width:16px;height:16px;flex:0 0 16px;color:#294d79}
 .transformer-ratio{grid-column:1/-1;border-top:1px solid #dce5f1;padding-top:11px;display:flex;align-items:baseline;gap:5px;font-size:14px;line-height:1.5;color:#536b87;overflow-wrap:anywhere}
 .transformer-ratio strong{font-weight:650;color:var(--navy)}
