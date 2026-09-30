@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#112c4e">
   <meta name="description" content="Поиск абонентов электросетей по номеру прибора учёта, лицевому счёту и адресу.">
-  <title>Абонент — поиск по реестру</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23112c4e'/%3E%3Cpath d='M18 5 9 18h7l-2 9 10-14h-7z' fill='%238edbf2'/%3E%3C/svg%3E">
+  <title>РОССЕТИ — Кубаньэнерго · Реестр абонентов</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="stylesheet" href="./styles.css">
   <script src="./config.js"></script>
   <script type="module" src="./app.js"></script>
@@ -27,13 +27,13 @@
   </svg>
   <header class="topbar">
     <div class="header-inner">
-      <a class="brand" href="./" aria-label="Абонент — главная"><span class="brand-mark"><svg><use href="#i-bolt"/></svg></span><span>абонент<span class="brand-caption">ЭЛЕКТРОСЕТИ</span></span></a>
+      <a class="brand" href="./" aria-label="РОССЕТИ — Кубаньэнерго, главная"><img class="brand-logo" src="./rosseti-logo.svg" alt="РОССЕТИ" width="280" height="88"><span class="brand-caption">КУБАНЬЭНЕРГО</span></a>
       <span class="header-note">Рабочий реестр</span>
-      <button class="settings-button" id="settings-open"><svg><use href="#i-settings"/></svg><span>Настройки</span></button>
+      <button class="settings-button" id="settings-open" aria-label="Настройки"><svg><use href="#i-settings"/></svg><span>Настройки</span></button>
     </div>
   </header>
   <main class="workspace">
-    <div class="page-heading"><div class="eyebrow">ПОИСК ПО РЕЕСТРУ</div><h1>Найти абонента</h1><button id="district-button" class="district-button"><svg><use href="#i-folder"/></svg><span id="district-label">Выберите подразделение</span><svg class="small-chevron"><use href="#i-chevron"/></svg></button></div>
+    <div class="page-heading"><div class="eyebrow">ПОИСК ПО РЕЕСТРУ</div><h1>Найти абонента</h1><button id="district-button" class="district-button"><svg><use href="#i-folder"/></svg><span id="district-label">Выберите предприятие</span><svg class="small-chevron"><use href="#i-chevron"/></svg></button></div>
     <div class="work-grid">
       <section class="search-column" aria-label="Поиск">
         <form id="search-form" class="search-panel">
@@ -44,7 +44,7 @@
           <button class="primary search-submit" type="submit" id="search-submit"><svg><use href="#i-search"/></svg>Найти</button>
           <div id="form-message" class="form-message" role="status" hidden></div>
         </form>
-        <div class="source-card" id="source-card"><div class="source-icon"><svg><use href="#i-file"/></svg></div><div class="source-copy"><strong id="source-name">Реестр не подключён</strong><span id="source-meta">Выберите папку в настройках</span></div><button class="icon-button" id="refresh" title="Обновить реестр" aria-label="Обновить реестр" hidden><svg><use href="#i-refresh"/></svg></button></div>
+        <div class="source-card" id="source-card"><div class="source-icon"><svg><use href="#i-file"/></svg></div><div class="source-copy"><strong id="source-name">Реестр не подключён</strong><span id="source-meta">Выберите предприятие в настройках</span></div><button class="icon-button" id="refresh" title="Обновить реестр" aria-label="Обновить реестр" hidden><svg><use href="#i-refresh"/></svg></button></div>
         <div id="demo-banner" class="demo-banner" hidden><span>Демонстрация · вымышленные данные</span><button id="demo-exit" type="button">Выйти</button></div>
         <div id="example-queries" class="example-queries" hidden><span>Попробуйте</span><button data-query="00123456" data-field="meter">ПУ 00123456</button><button data-query="00000001001" data-field="account">ЛС 00000001001</button></div>
         <div class="desktop-footnote"><svg><use href="#i-bolt"/></svg><p>Вся строка реестра —<br>в одной карточке</p></div>
@@ -55,18 +55,17 @@
         <button class="secondary show-more" id="show-more" hidden>Показать ещё</button>
       </section>
     </div>
-    <footer class="page-footer"><span>АБОНЕНТ <span class="footer-slash">/</span> ЭЛЕКТРОСЕТИ</span><span>Данные из вашего реестра</span></footer>
+    <footer class="page-footer"><span>РОССЕТИ <span class="footer-slash">/</span> КУБАНЬЭНЕРГО</span><span>Данные из вашего реестра</span></footer>
   </main>
   <dialog id="settings-dialog" class="settings-dialog">
     <div class="dialog-header"><div><span class="eyebrow">РАБОЧАЯ ОБЛАСТЬ</span><h2>Настройки</h2></div><button class="icon-button close-dialog" aria-label="Закрыть настройки"><svg><use href="#i-close"/></svg></button></div>
     <div class="dialog-body">
-      <div class="setting-section"><h3><span class="step">01</span>Источник реестров</h3><div id="pinned-source" class="pinned-source" hidden><svg><use href="#i-folder"/></svg><span>Общая папка Яндекс Диска</span><span class="tag">Закреплена</span></div><div id="root-editor"><label class="input-label" for="root-url">Ссылка на общую папку Яндекс Диска</label><input class="text-input" type="url" id="root-url" placeholder="https://disk.yandex.ru/d/…" autocomplete="off"><p class="hint">Внутри — папки ваших подразделений с реестрами Excel.</p></div><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Прочитать папки</button></div>
-      <div class="setting-section"><h3><span class="step">02</span>Подразделение</h3><div id="folder-list" class="choice-list"><p class="hint">Сначала подключите общую папку.</p></div></div>
-      <div class="setting-section" id="files-section" hidden><h3><span class="step">03</span>Файл реестра</h3><div id="file-list" class="choice-list"></div><button id="load-file" class="primary full-width" disabled>Открыть реестр</button></div>
+      <div id="pinned-source" class="pinned-source" hidden><svg><use href="#i-folder"/></svg><span>Общая папка Яндекс Диска</span><span class="tag">Подключена</span></div><p id="source-setup-message" class="hint" role="status">Подключаем общую папку…</p>
+      <div class="setting-section folder-section"><h3>Предприятие электрических сетей</h3><p class="hint">Названия предприятий считываются из папок на Яндекс Диске. Выберите своё — реестр абонентов откроется автоматически.</p><p class="hint">Файл «Потребление» пока не используется. Если реестров несколько, откроется самый свежий.</p><div id="folder-list" class="choice-list"><p class="hint">Загружаем предприятия…</p></div><button id="read-folders" class="secondary full-width" disabled><svg><use href="#i-refresh"/></svg>Обновить список предприятий</button></div>
       <div class="setting-section" id="mapping-section" hidden><h3>Проверьте столбцы</h3><p class="hint">Убедитесь, что приложение правильно определило номера ПУ и лицевых счетов.</p><div id="mapping-fields"></div><div id="mapping-warning" class="notice" hidden></div><button id="confirm-mapping" class="primary full-width">Использовать реестр</button></div>
       <div id="settings-message" class="form-message" role="status" hidden></div>
       <div class="local-source"><div><strong>Excel на устройстве</strong><p class="hint">Открыть файл для поиска на этом устройстве.</p></div><label class="secondary file-upload"><svg><use href="#i-file"/></svg>Выбрать файл<input id="local-file" type="file" accept=".xlsx,.xls,.xlsm,.csv" class="sr-only"></label></div>
-      <p class="privacy-note">Реестр обрабатывается на вашем устройстве и не сохраняется в приложении. Запоминается только выбранная папка.</p>
+      <p class="privacy-note">Реестр обрабатывается на вашем устройстве и не сохраняется в приложении. Запоминается только выбранное предприятие и настройки поиска.</p>
     </div>
   </dialog>
   <dialog id="record-dialog" class="record-dialog"><div class="dialog-header"><div><span class="eyebrow">КАРТОЧКА АБОНЕНТА</span><h2>Данные реестра</h2></div><button class="icon-button close-dialog" aria-label="Закрыть карточку"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body" id="record-body"></div></dialog>

@@ -1,5 +1,6 @@
 import { clean } from './core.js';
 import { demo } from './demo.js';
+import { newestRegistry } from './source.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -8,7 +9,8 @@ const number = n => new Intl.NumberFormat('ru-RU').format(n);
 const recordsText = n => `${number(n)} ${n % 100 >= 11 && n % 100 <= 14 ? 'записей' : n % 10 === 1 ? 'запись' : n % 10 >= 2 && n % 10 <= 4 ? 'записи' : 'записей'}`;
 const formatDate = value => value ? new Date(value).toLocaleDateString('ru-RU') : '';
 const initial = window.ABONENT_CONFIG || {};
-let config = { ...initial }, proxy = false, folders = [], files = [], selectedFolder = null, selectedFile = null;
+let config = { ...initial }, proxy = false, folders = [], selectedFolder = null, selectedFile = null;
+let sourceState = 'loading';
 let summary = null, pending = null, currentSource = null, isDemo = false, busy = false, operation = 0;
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 const requests = new Map();
@@ -39,25 +41,51 @@ function message(target, value, loading = false) { const el = $(target); el.text
 function toast(value) { $('#toast').textContent = value; $('#toast').hidden = false; setTimeout(() => { $('#toast').hidden = true; }, 3000); }
 function setBusy(value, text = '') {
   busy = value;
-  for (const sel of ['#read-folders', '#load-file', '#confirm-mapping', '#local-file']) $(sel).disabled = value || (sel === '#load-file' && !selectedFile);
+  for (const sel of ['#confirm-mapping', '#local-file']) $(sel).disabled = value;
+  $('#read-folders').disabled = value || sourceState === 'loading' || sourceState === 'missing';
   document.querySelectorAll('.choice-item').forEach(el => { el.disabled = value; });
   $('#refresh').disabled = value;
   if (text || !value) message('#settings-message', text, value);
 }
 function showSettings() {
   if (!$('#settings-dialog').open) $('#settings-dialog').showModal();
-  if (!folders.length && rootUrl() && !busy && !pending) readFolders();
+  if (!folders.length && sourceState === 'ready' && !busy && !pending) readFolders();
 }
-function rootUrl() { return config.publicUrl || clean($('#root-url').value); }
+function rootUrl() { return clean(config.publicUrl); }
+function renderSourceState() {
+  const ready = sourceState === 'ready';
+  $('#pinned-source').hidden = !ready;
+  $('#source-setup-message').hidden = ready;
+  $('#source-setup-message').textContent = sourceState === 'loading' ? 'Подключаем общую папку…' : sourceState === 'error' ? 'Не удалось получить настройки источника. Проверьте соединение и повторите.' : 'Общая папка ещё не подключена. Обратитесь к администратору приложения.';
+  $('#folder-list').innerHTML = '<p class="hint">' + (ready ? 'Загружаем предприятия…' : 'Предприятия появятся после подключения общей папки.') + '</p>';
+  $('#read-folders').disabled = busy || sourceState === 'loading' || sourceState === 'missing';
+}
+async function readConfiguration() {
+  sourceState = 'loading'; renderSourceState();
+  try {
+    const response = await fetch(new URL('./api/config', location.href), { signal: AbortSignal.timeout(10000), cache: 'no-store' });
+    if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
+      const remote = await response.json();
+      if (remote.proxy !== true) throw new Error('Неизвестный ответ сервера.');
+      proxy = true; config = { ...initial, ...remote, publicUrl: remote.publicUrl || '' };
+    } else if (response.status === 404 || response.ok) {
+      proxy = false; config = { ...initial }; // Static hosting uses its fixed config.js only.
+    } else throw new Error('Настройки сервера недоступны.');
+    sourceState = rootUrl() ? 'ready' : 'missing';
+    if (rootUrl()) validateRoot(rootUrl());
+  } catch { sourceState = 'error'; }
+  renderSourceState();
+}
 function validateRoot(value) {
   try { const u = new URL(value); if (u.protocol === 'https:' && !u.username && !u.password && !u.port && ['disk.yandex.ru', 'disk.yandex.com', 'disk.yandex.net', 'disk.360.yandex.ru', 'yadi.sk'].includes(u.hostname) && /^\/(d|i)\/[\w-]+\/?$/.test(u.pathname)) return `${u.origin}${u.pathname}`; } catch {}
-  throw new Error('Нужна публичная ссылка на папку: https://disk.yandex.ru/d/…');
+  throw new Error('Адрес общей папки настроен некорректно. Обратитесь к администратору приложения.');
 }
 async function apiRequest(action, path = '/', offset = 0) {
   const base = config.apiBase || (proxy ? new URL('./api/', location.href).href : 'https://cloud-api.yandex.net/v1/disk/public/');
   const endpoint = proxy || config.apiBase ? action : action === 'download' ? 'resources/download' : 'resources';
   const url = new URL(endpoint, base.endsWith('/') ? base : base + '/');
-  url.searchParams.set('public_key', validateRoot(rootUrl())); url.searchParams.set('path', path);
+  if (!proxy && !config.apiBase) url.searchParams.set('public_key', validateRoot(rootUrl()));
+  url.searchParams.set('path', path);
   if (action === 'resources') { url.searchParams.set('offset', offset); url.searchParams.set('limit', 100); url.searchParams.set('sort', 'name'); }
   let response;
   try { response = await fetch(url, { signal: AbortSignal.timeout(action === 'download' ? 90000 : 25000), credentials: 'same-origin' }); }
@@ -73,43 +101,44 @@ async function listFolder(path) {
   let all = [], offset = 0;
   while (true) {
     const data = await (await apiRequest('resources', path, offset)).json();
-    if (data.type !== 'dir') throw new Error('По ссылке расположен файл. Нужна общая папка с подразделениями.');
+    if (data.type !== 'dir') throw new Error('По ссылке расположен файл. Нужна общая папка с предприятиями электрических сетей.');
     const part = data._embedded?.items || []; all.push(...part); offset += part.length;
     if (!part.length || offset >= (data._embedded?.total ?? offset)) break;
-    if (offset > 10000) throw new Error('В папке слишком много файлов. Разделите её на подразделения.');
+    if (offset > 10000) throw new Error('В папке слишком много файлов. Разделите её на папки предприятий.');
   }
   return all;
 }
 function renderFolders() {
-  $('#folder-list').innerHTML = folders.length ? folders.map((f, i) => `<button type="button" class="choice-item ${selectedFolder?.path === f.path ? 'selected' : ''}" data-folder="${i}">${icon('folder')}<span>${esc(f.name)}</span><i class="choice-dot" aria-hidden="true"></i></button>`).join('') : '<p class="hint">В общей папке пока нет подразделений. Добавьте папки на Яндекс Диске.</p>';
+  $('#folder-list').innerHTML = folders.length ? folders.map((f, i) => `<button type="button" class="choice-item ${selectedFolder?.path === f.path ? 'selected' : ''}" data-folder="${i}">${icon('folder')}<span>${esc(f.name)}</span><i class="choice-dot" aria-hidden="true"></i></button>`).join('') : '<p class="hint">В общей папке пока нет предприятий. Добавьте на Яндекс Диск папки с их названиями.</p>';
 }
 async function readFolders() {
   if (busy) return;
+  if (sourceState !== 'ready') { await readConfiguration(); if (sourceState !== 'ready') return; }
   try {
     const root = validateRoot(rootUrl());
-    if (prefs.root !== root) { clearDataset(); folders = []; files = []; selectedFolder = null; selectedFile = null; prefs = { root }; savePrefs(); $('#files-section').hidden = true; }
-    setBusy(true, 'Читаем папки Яндекс Диска…');
+    if (prefs.root !== root) { clearDataset(); folders = []; selectedFolder = null; selectedFile = null; prefs = { root }; savePrefs(); }
+    setBusy(true, 'Загружаем список предприятий…');
     folders = (await listFolder('/')).filter(f => f.type === 'dir').sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     renderFolders(); setBusy(false);
   } catch (error) { setBusy(false); message('#settings-message', error.message); }
 }
 async function selectFolder(i) {
+  if (busy || !folders[i]) return;
+  await openFolder(folders[i]);
+}
+async function openFolder(folder) {
   if (busy) return;
-  selectedFolder = folders[i]; selectedFile = null; files = [];
-  $('#files-section').hidden = false; $('#file-list').innerHTML = '<p class="hint">Ищем файлы Excel…</p>';
+  clearDataset();
+  selectedFolder = folder; selectedFile = null;
   renderFolders();
   try {
-    setBusy(true, 'Читаем реестры подразделения…');
+    setBusy(true, 'Читаем реестры предприятия…');
     // One directory is one working area. Files in deeper folders are not silently combined.
-    files = (await listFolder(selectedFolder.path)).filter(f => f.type === 'file' && /\.(xlsx|xls|xlsm|csv)$/i.test(f.name) && !f.name.startsWith('~$')).sort((a, b) => String(b.modified || '').localeCompare(String(a.modified || '')) || a.name.localeCompare(b.name, 'ru'));
-    selectedFile = files.find(f => f.path === prefs.file?.path) || files[0] || null;
-    renderFiles(); setBusy(false);
-    if (!files.length) message('#settings-message', 'В этой папке нет Excel-файлов. Поместите реестр непосредственно в папку подразделения.');
-  } catch (error) { setBusy(false); $('#file-list').innerHTML = ''; message('#settings-message', error.message); }
-}
-function renderFiles() {
-  $('#file-list').innerHTML = files.map((f, i) => `<button type="button" class="choice-item ${selectedFile?.path === f.path ? 'selected' : ''}" data-file="${i}">${icon('file')}<span>${esc(f.name)}<small>${f.size ? (f.size / 1048576).toFixed(1) + ' МБ' : ''}${f.modified ? ' · Изменён ' + formatDate(f.modified) : ''}</small></span><i class="choice-dot" aria-hidden="true"></i></button>`).join('');
-  $('#load-file').disabled = !selectedFile || busy;
+    selectedFile = newestRegistry(await listFolder(selectedFolder.path));
+    setBusy(false);
+    if (!selectedFile) { message('#settings-message', 'Реестр абонентов не найден. Добавьте Excel в папку предприятия. Файл «Потребление» в поиске не используется.'); return; }
+    await downloadFile();
+  } catch (error) { setBusy(false); message('#settings-message', error.message); }
 }
 async function boundedBuffer(response) {
   const max = (config.maxFileMB || 40) * 1048576;
@@ -129,7 +158,7 @@ async function downloadFile() {
     if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Реестр больше 40 МБ. Разделите его на несколько файлов.');
     setBusy(true, 'Загружаем реестр…');
     const latest = await (await apiRequest('resources', file.path)).json();
-    if (latest.type !== 'file') throw new Error('Выбранный реестр больше не найден. Обновите список файлов.');
+    if (latest.type !== 'file') throw new Error('Выбранный реестр больше не найден. Обновите реестр предприятия.');
     file = { ...file, ...latest }; selectedFile = file;
     let response = await apiRequest('download', file.path);
     if (!proxy && !config.apiBase) {
@@ -154,8 +183,11 @@ async function loadBuffer(buffer, source) {
   const data = await rpc('load', { buffer, file: source.name }, [buffer]);
   if (operation !== op) return;
   pending = { ...data, source };
-  if (source.type === 'disk' && prefs.mappingSignature === signature(data) && prefs.file?.path === source.fileInfo.path && prefs.root === source.root) {
+  if (source.type === 'disk' && prefs.mappingSignature === signature(data) && prefs.folder?.path === source.folderInfo.path && prefs.root === source.root) {
     await confirmMapping(prefs.overrides || {}, true);
+  } else if (source.type === 'disk' && !data.skipped.length && data.sheets.every(s => !s.layout.flattened && s.layout.mapping.meter !== undefined && s.layout.mapping.account !== undefined)) {
+    const overrides = Object.fromEntries(data.sheets.map(s => [s.sheet, { meter: s.layout.mapping.meter, account: s.layout.mapping.account }]));
+    await confirmMapping(overrides, true);
   } else { renderMapping(); setBusy(false); $('#mapping-section').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 function signature(data) { return JSON.stringify(data.sheets.map(s => [s.sheet, s.layout.labels])); }
@@ -201,8 +233,8 @@ async function startDemo() {
 }
 function updateSource() {
   $('#source-name').textContent = currentSource?.name || 'Реестр не подключён';
-  $('#source-meta').textContent = summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : 'Выберите папку в настройках';
-  $('#district-label').textContent = currentSource?.folder || 'Выберите подразделение';
+  $('#source-meta').textContent = summary ? `${recordsText(summary.count)} · ${currentSource.modified ? 'Файл от ' + formatDate(currentSource.modified) : currentSource.type === 'local' ? 'Файл с устройства' : 'Готов к поиску'}` : 'Выберите предприятие в настройках';
+  $('#district-label').textContent = currentSource?.folder || 'Выберите предприятие';
   $('#refresh').hidden = currentSource?.type !== 'disk';
   $('#demo-banner').hidden = !isDemo; $('#example-queries').hidden = !isDemo;
   document.querySelectorAll('[name="field"]').forEach(input => {
@@ -223,12 +255,12 @@ function emptyState(title, text, type = 'search', actions = '') { return `<div c
 function renderResults() {
   $('#show-more').hidden = true; $('#results-count').textContent = ''; $('#results-title').textContent = submitted ? 'Найденные абоненты' : 'Результаты поиска';
   if (!summary) {
-    $('#results').innerHTML = emptyState(pending ? 'Проверьте столбцы реестра' : 'Подключите ваш реестр', pending ? 'Подтвердите номера ПУ и лицевых счетов в настройках.' : 'Выберите подразделение и файл Excel. Дальше — просто введите номер.', 'folder', '<button class="secondary" data-open-settings>Открыть настройки</button>' + (pending ? '' : '<button class="text-button" id="start-demo">Посмотреть пример</button>'));
+    $('#results').innerHTML = emptyState(pending ? 'Проверьте столбцы реестра' : 'Выберите предприятие', pending ? 'Подтвердите номера ПУ и лицевых счетов в настройках.' : 'Выберите предприятие электрических сетей в настройках. Реестр абонентов загрузится автоматически.', 'folder', '<button class="secondary" data-open-settings>Открыть настройки</button>' + (pending ? '' : '<button class="text-button" id="start-demo">Посмотреть пример</button>'));
     return;
   }
   if (!submitted) { $('#results').innerHTML = emptyState('Можно искать', `В реестре ${recordsText(summary.count)}. Введите номер ПУ, лицевой счёт или адрес.`, 'search'); return; }
   $('#results-count').textContent = recordsText(resultTotal);
-  if (!results.length) { $('#results').innerHTML = emptyState('Совпадений нет', field() === 'address' ? 'Попробуйте указать только улицу и номер дома.' : 'Проверьте номер и выбранное подразделение. Можно включить поиск по части номера.'); return; }
+  if (!results.length) { $('#results').innerHTML = emptyState('Совпадений нет', field() === 'address' ? 'Попробуйте указать только улицу и номер дома.' : 'Проверьте номер и выбранное предприятие. Можно включить поиск по части номера.'); return; }
   $('#results').innerHTML = results.map(r => `<article class="result-card"><div class="result-top"><h3 class="result-name">${esc(r.fields.name || 'Абонент без наименования')}</h3>${r.fields.status ? `<span class="status ${/откл/i.test(r.fields.status) ? 'off' : ''}">${esc(r.fields.status)}</span>` : ''}</div><p class="result-address">${icon('pin')}<span>${esc(r.address || 'Адрес не указан в реестре')}</span></p><div class="result-numbers"><div><div class="number-label">НОМЕР ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div><div class="number-label">ЛИЦЕВОЙ СЧЁТ</div><div class="number-value">${esc(r.fields.account || '—')}</div></div></div><div class="result-bottom"><span>${esc(r.fields.tp || r.sheet)} · строка ${r.row}</span><button class="record-open" data-record="${esc(r.id)}">Все данные</button></div></article>`).join('');
   $('#show-more').hidden = results.length >= resultTotal;
 }
@@ -262,8 +294,7 @@ document.querySelectorAll('.close-dialog').forEach(button => button.addEventList
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', e => { if (e.target !== dialog) return; const rect = dialog.getBoundingClientRect(); if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) dialog.close(); }));
 $('#read-folders').addEventListener('click', readFolders);
 $('#folder-list').addEventListener('click', e => { const button = e.target.closest('[data-folder]'); if (button) selectFolder(Number(button.dataset.folder)); });
-$('#file-list').addEventListener('click', e => { const button = e.target.closest('[data-file]'); if (button && !busy) { selectedFile = files[Number(button.dataset.file)]; renderFiles(); } });
-$('#load-file').addEventListener('click', downloadFile); $('#confirm-mapping').addEventListener('click', () => confirmMapping());
+$('#confirm-mapping').addEventListener('click', () => confirmMapping());
 $('#mapping-fields').addEventListener('change', updateMapPreview);
 $('#local-file').addEventListener('change', async e => {
   const file = e.target.files[0]; if (!file) return;
@@ -277,26 +308,20 @@ $('#clear-query').addEventListener('click', () => { $('#search-input').value = '
 document.querySelectorAll('[name="field"]').forEach(input => input.addEventListener('change', () => { updateSearchMode(); submitted = false; results = []; searchVersion++; renderResults(); }));
 $('#partial').addEventListener('change', () => { updateSearchMode(); submitted = false; searchVersion++; renderResults(); });
 $('#show-more').addEventListener('click', () => doSearch(true));
-$('#refresh').addEventListener('click', () => { if (currentSource?.type !== 'disk') return; selectedFile = currentSource.fileInfo; selectedFolder = currentSource.folderInfo; $('#settings-dialog').showModal(); downloadFile(); });
+$('#refresh').addEventListener('click', () => { if (currentSource?.type !== 'disk') return; const folder = currentSource.folderInfo; $('#settings-dialog').showModal(); openFolder(folder); });
 $('#demo-exit').addEventListener('click', clearDataset);
 $('#results').addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('#start-demo')) startDemo(); const button = e.target.closest('[data-record]'); if (button) openRecord(button.dataset.record); });
 $('#example-queries').addEventListener('click', e => { const b = e.target.closest('[data-query]'); if (!b) return; $(`[name="field"][value="${b.dataset.field}"]`).checked = true; updateSearchMode(); $('#search-input').value = b.dataset.query; $('#clear-query').hidden = false; doSearch(); });
 $('#record-body').addEventListener('click', async e => { if (!e.target.closest('#copy-record') || !activeRecord) return; try { await navigator.clipboard.writeText(activeRecord.labels.map((label, i) => `${label}: ${activeRecord.values[i] || '—'}`).join('\n')); toast('Данные скопированы'); } catch { toast('Браузер не разрешил копирование. Выделите текст карточки.'); } });
 
 renderResults();
-try {
-  const response = await fetch(new URL('./api/config', location.href), { signal: AbortSignal.timeout(3000) });
-  if (response.ok && response.headers.get('content-type')?.includes('application/json')) { const remote = await response.json(); if (remote.proxy === true) { proxy = true; config = { ...config, ...remote, publicUrl: remote.publicUrl || config.publicUrl }; } }
-} catch { /* Static deployment has no backend; direct public API remains available. */ }
-$('#root-url').value = config.publicUrl || prefs.root || '';
-$('#root-editor').hidden = Boolean(config.publicUrl); $('#pinned-source').hidden = !config.publicUrl;
-if (prefs.folder && prefs.file && rootUrl() && prefs.root === rootUrl()) {
-  selectedFolder = prefs.folder; selectedFile = prefs.file;
+await readConfiguration();
+if (prefs.folder && sourceState === 'ready' && prefs.root === validateRoot(rootUrl())) {
   $('#source-meta').textContent = 'Подключаем выбранный реестр…';
-  // Re-fetch on every visit: no old subscriber data is persisted in browser storage.
-  await downloadFile();
+  // Re-list on every visit, so a new file name does not leave the device on an old registry.
+  await openFolder(prefs.folder);
   if (pending || !summary) { showSettings(); }
-}
+} else if ($('#settings-dialog').open && sourceState === 'ready') await readFolders();
 
 // Optional browser standard; uses exactly the same UI actions and current working area.
 if (document.modelContext?.registerTool) {

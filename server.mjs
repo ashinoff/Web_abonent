@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,10 @@ function authorized(req) {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 export function createServer() {
+  // Amvera injects this once for the whole application, not separately per device.
+  const configuredUrl = (process.env.YANDEX_PUBLIC_URL || '').trim();
+  const configured = validPublicUrl(configuredUrl);
+  const key = configured ? new URL(configuredUrl).origin + new URL(configuredUrl).pathname : '';
   return http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -42,10 +46,9 @@ export function createServer() {
     if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: 'Метод не поддерживается.' }); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: process.env.YANDEX_PUBLIC_URL || '', proxy: true, maxFileMB: 40 }); return; }
+      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40 }); return; }
       if (url.pathname === '/api/resources' || url.pathname === '/api/download') {
-        const key = process.env.YANDEX_PUBLIC_URL || url.searchParams.get('public_key') || '';
-        if (!validPublicUrl(key)) { sendJson(res, 400, { error: 'Укажите публичную ссылку на папку Яндекс Диска.' }); return; }
+        if (!configured) { sendJson(res, 503, { error: 'Общая папка не подключена. Обратитесь к администратору приложения.', code: configuredUrl ? 'source_invalid' : 'source_not_configured' }); return; }
         const path = url.searchParams.get('path') || '/';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096) { sendJson(res, 400, { error: 'Некорректный путь.' }); return; }
         const target = new URL(api + (url.pathname === '/api/download' ? '/download' : ''));
