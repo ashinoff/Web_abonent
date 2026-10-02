@@ -1,3 +1,4 @@
+import { readBoundedBuffer } from './download-buffer.js';
 import { clean, norm } from './core.js';
 import { demo, demoMonthly } from './demo.js';
 import { findSource, isExcelFile, isRegistryFile, isConsumptionFile, REGISTRY_NAME, CONSUMPTION_NAME, INCOMING_NAME } from './source.js';
@@ -330,17 +331,6 @@ async function openRes(res, { keepSettings = false } = {}) {
   if (selectedRes?.path === res.path && consumptionFile) await readConsumptionFile();
   if (selectedRes?.path === res.path && incomingFile) await readIncomingFile();
 }
-async function boundedBuffer(response) {
-  const max = (config.maxFileMB || 40) * 1048576;
-  if (Number(response.headers.get('content-length')) > max) throw new Error(`Файл больше ${config.maxFileMB || 40} МБ.`);
-  const reader = response.body.getReader(); let length = 0; const chunks = [];
-  try {
-    while (true) { const { value, done } = await reader.read(); if (done) break; length += value.length; if (length > max) throw new Error('Файл превышает допустимый размер.'); chunks.push(value); }
-  } catch (error) { await reader.cancel(); throw error; }
-  const buffer = new Uint8Array(length); let offset = 0;
-  for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.length; }
-  return buffer.buffer;
-}
 async function fetchWorkbook(file) {
   if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Файл больше 40 МБ.');
   const latest = await (await apiRequest('resources', file.path)).json();
@@ -355,7 +345,7 @@ async function fetchWorkbook(file) {
     try { response = await fetch(href, { signal: AbortSignal.timeout(90000) }); } catch { throw new Error('Браузер заблокировал скачивание с Диска. Откройте Excel с устройства или используйте версию на Амвере.'); }
     if (!response.ok) throw new Error('Не удалось скачать Excel. Проверьте доступ по ссылке.');
   }
-  return { file, buffer: await boundedBuffer(response) };
+  return { file, buffer: await readBoundedBuffer(response, (config.maxFileMB || 40) * 1048576, file.size) };
 }
 async function downloadFile({ keepSettings = false } = {}) {
   if (busy || !selectedFile || !selectedFolder || !selectedRes) return;
@@ -447,6 +437,7 @@ async function confirmMapping(savedOverrides, automatic = false) {
     const data = await rpc('remap', { overrides });
     currentSource = pending.source; summary = data;
     if (consumptionState === 'ready') await monthlyRPC('updateAnalysisRegistry',{records:await rpc('analysisRecords')});
+    await rpc('releaseSource');
     if (currentSource.type === 'disk') {
       prefs = { fileChoices: prefs.fileChoices, root: currentSource.root, folder: { name: currentSource.folderInfo.name, path: currentSource.folderInfo.path }, res: { name: currentSource.resInfo.name, path: currentSource.resInfo.path }, file: { name: currentSource.fileInfo.name, path: currentSource.fileInfo.path }, mappingSignature: signature(pending), overrides };
       savePrefs();

@@ -32,21 +32,23 @@ export function createAnalysisService(model, records = []) {
     const usedMeters = registry.filter(r => rows.some(row => samePoint(row, r.fields))).map(r => idKey(r.fields.meter)).filter(Boolean);
     return { id: key, account, name, tp: knownTPs.length === 1 ? 'tp:' + tpKey(knownTPs[0]) : 'all:multi', tpNames: knownTPs, values: strictSum(rows, model.months.length), power, ctype: kind, voltage: null, dup: new Set(usedMeters).size < usedMeters.length, pointCount: points.size, rowCount: rows.length, sources: rows.map(r => r.source), incomplete: model.months.filter((_, i) => rows.some(r => r.values[i] == null)).length, negative: rows.some(r => r.values.some(v => v != null && v < 0)) };
   }
-  const globalMeters = [...model.accounts].map(([key, rows]) => meter(rows, key));
   const tpRows = new Map();
   for (const row of model.rows) if (row.tp) {
     const key = tpKey(row.tp); if (!tpRows.has(key)) tpRows.set(key, { name: row.tp, rows: [], accounts: new Map() });
     const group = tpRows.get(key); group.rows.push(row);
     if (!group.accounts.has(row.accountKey)) group.accounts.set(row.accountKey, []); group.accounts.get(row.accountKey).push(row);
   }
-  const contourMeters = [...tpRows].flatMap(([tp, group]) => [...group.accounts].map(([key, rows]) => meter(rows, `${tp}|${key}`)));
   let cache = new Map(), settingsKey = '';
   function run(scope, settings, selectedMeters = null) {
     const config = normalizeSettings(settings), signature = JSON.stringify(config);
     if (signature !== settingsKey) { cache.clear(); settingsKey = signature; }
     if (cache.has(scope)) return cache.get(scope);
     setTune(config.levels, config); setZoneMode(config.zone, config.lossRed, config.lossAmber); setBoosts(config.boosts); setAlgOff(scope.startsWith('contour:') ? config.algOff : { ...config.algOff, zeroAlive: true, peers: true, season: true, imb: true, dzero: true, dsync: true });
-    const meters = selectedMeters || (scope.startsWith('contour:') ? contourMeters.filter(m => m.tp === 'tp:' + scope.slice(8)) : globalMeters.filter(m => m.id === scope.slice(9)));
+    // Loading a report builds indexes only. Aggregate the requested account or
+    // contour on demand, instead of materialising every series twice up front.
+    const meters = selectedMeters || (scope.startsWith('contour:')
+      ? [...tpRows.get(scope.slice(8)).accounts].map(([key, rows]) => meter(rows, `${scope.slice(8)}|${key}`))
+      : [meter(model.accounts.get(scope.slice(9)), scope.slice(9))]);
     // Negative adjustments are not evidence of a stopped meter; mark them unknown
     // to the detector, but retain the original values in the chart and totals.
     const engineMeters = meters.map(m => ({ ...m, values: m.values.map(v => v != null && v < 0 ? null : v) }));
@@ -57,8 +59,12 @@ export function createAnalysisService(model, records = []) {
       r.total = r.meter.values.some(v => v != null) ? r.meter.values.reduce((s, v) => s + (v ?? 0), 0) : null;
       if (!r.meter.values.some(v => v != null && v >= 0)) { r.cls = 'unknown'; r.flags = []; r.lossKwh = null; r.score = null; }
     }
-    if (cache.size >= 12) cache.delete(cache.keys().next().value);
-    cache.set(scope, result); return result;
+    // A few large contours must not fill a mobile tab with cached histories.
+    if (result.results.length <= 1000) {
+      while (cache.size >= 8 || [...cache.values()].reduce((n, item) => n + item.results.length, 0) + result.results.length > 1000) cache.delete(cache.keys().next().value);
+      cache.set(scope, result);
+    }
+    return result;
   }
   function resolveAccount(value) {
     const key = idKey(value), choices = model.aliases.get(key);

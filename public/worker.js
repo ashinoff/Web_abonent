@@ -10,10 +10,11 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: inspectExcelWorkbook(payload.buffer, XLSX) }); return;
     }
     if (action === 'loadMonthly' || action === 'demoMonthly') {
-      analysisService = null;
+      analysisService = null; monthlyModel = null;
       const { readMonthlyWorkbook, indexMonthly } = await import('./monthly.js');
       const { createAnalysisService } = await import('./analysis-service.js');
       const parsed = action === 'demoMonthly' ? payload.parsed : readMonthlyWorkbook(payload.buffer, XLSX);
+      payload.buffer = null;
       monthlyModel = indexMonthly(parsed);
       analysisService = createAnalysisService(monthlyModel, payload.records);
       self.postMessage({ id, result: analysisService.summary }); return;
@@ -27,14 +28,16 @@ self.onmessage = async ({ data }) => {
       const result = action === 'analysisConsumer' ? analysisService.consumer(payload.account, payload.settings, payload.tp, payload.point) : action === 'analysisTP' ? analysisService.contour(payload.tp, payload.settings) : analysisService.tps();
       self.postMessage({ id, result }); return;
     }
-    if (action === 'analysisRecords') { self.postMessage({ id, result: (index?.records || []).map(({ fields }) => ({ fields })) }); return; }
+    if (action === 'releaseSource') { sourceSheets = []; self.postMessage({ id, result: true }); return; }
+    if (action === 'analysisRecords') { const { analysisRecords } = await core; self.postMessage({ id, result: analysisRecords(index?.records || []) }); return; }
     const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, listNotes } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {
       sourceSheets = []; sheets = []; index = null;
       if (action === 'demo') sourceSheets = payload.sheets;
       else {
-        const book = XLSX.read(payload.buffer, { type: 'array', cellText: true, cellDates: false, cellHTML: false, cellNF: true, sheetRows: 100002 });
+        const book = XLSX.read(payload.buffer, { type: 'array', dense: true, cellText: true, cellDates: false, cellHTML: false, cellFormula: false, cellNF: true, sheetRows: 100002 });
+        payload.buffer = null;
         for (const name of book.SheetNames) {
           const ws = book.Sheets[name];
           if (!ws['!ref']) continue;
@@ -44,12 +47,14 @@ self.onmessage = async ({ data }) => {
           try { restoreNumericIdentifiers(matrix, ws, detectLayout(matrix, ws['!merges'] || [])); }
           catch (error) { if (/Excel мог округлить/.test(error.message)) throw error; }
           sourceSheets.push({ matrix, sheet: name, file: payload.file, merges: ws['!merges'] || [] });
+          delete book.Sheets[name];
         }
       }
     }
     if (action === 'load' || action === 'demo' || action === 'remap') {
+      if (!sourceSheets.length) throw new Error('Для нового сопоставления столбцов перечитайте реестр.');
       const skipped = [];
-      sheets = [];
+      sheets = []; index = null;
       for (const source of sourceSheets) {
         try {
           const parsed = parseMatrix(source.matrix, { ...source, overrides: payload.overrides?.[source.sheet] || null });
@@ -59,6 +64,7 @@ self.onmessage = async ({ data }) => {
       }
       if (!sheets.length) throw new Error(skipped[0]?.error || 'В файле нет доступных строк реестра.');
       index = buildIndex(sheets);
+      if (action === 'demo') sourceSheets = [];
       self.postMessage({ id, result: { count: index.records.length, notesCount: index.notes.length, hasNotesColumn: index.hasNotesColumn, skipped, sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })) } });
     } else if (action === 'search') {
       if (!index) throw new Error('Сначала откройте реестр.');

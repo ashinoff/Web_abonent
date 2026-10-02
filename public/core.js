@@ -29,7 +29,8 @@ function headerScore(row) {
   return (keys.has('meter') ? 7 : 0) + (keys.has('account') ? 7 : 0) + Math.min(keys.size, 6);
 }
 export function detectLayout(matrix, merges = []) {
-  const rows = matrix.map(row => row.map(clean));
+  // Header detection never needs a cleaned copy of the entire registry.
+  const rows = matrix.slice(0, 96).map(row => row.map(clean));
   let start = -1, best = 0;
   for (let i = 0; i < Math.min(rows.length, 80); i++) {
     const score = headerScore(rows[i]);
@@ -84,7 +85,7 @@ export function restoreNumericIdentifiers(matrix, worksheet, layout) {
   const columns = new Set(['meter', 'account', 'point', 'pointNumber', 'phone'].map(key => layout.mapping[key]).filter(Number.isInteger));
   for (const [c, label] of layout.labels.entries()) if (/номер|телефон|лицевой|^лс/i.test(label)) columns.add(c);
   for (let r = layout.end + 1; r < matrix.length; r++) for (const c of columns) {
-    const cell = worksheet[`${columnName(c)}${r + 1}`];
+    const cell = worksheet['!data'] ? worksheet['!data'][r]?.[c] : worksheet[`${columnName(c)}${r + 1}`];
     if (cell?.t !== 'n' || !Number.isInteger(cell.v)) continue;
     if (!Number.isSafeInteger(cell.v) || Math.abs(cell.v) >= 1e15) throw new Error(`Строка ${r + 1}: длинный номер хранится в Excel как число. Установите текстовый формат и восстановите исходный номер — Excel мог округлить его.`);
     if (/e[+-]\d+/i.test(String(matrix[r]?.[c])) || !cell.z || cell.z === 'General') matrix[r][c] = String(cell.v);
@@ -147,6 +148,11 @@ export function listNotes(index, { query = '', offset = 0, limit = 100 } = {}) {
   const q = norm(query);
   const found = index.notes.filter(r => !q || norm([r.note, r.fields.meter, r.fields.account, r.fields.name, r.fields.tp, r.fields.point, r.fields.pointNumber, r.fields.pointName, r.address].filter(Boolean).join(' ')).includes(q));
   return { total: found.length, totalInRegistry: index.notes.length, notes: found.slice(offset, offset + Math.min(limit, 200)) };
+}
+// Only these fields are needed to relate consumption to registry points.
+export function analysisRecords(records) {
+  const keys = ['account', 'point', 'pointNumber', 'pointName', 'meter', 'tp', 'power', 'name'];
+  return records.map(record => ({ fields: Object.fromEntries(keys.map(key => [key, record.fields[key] ?? ''])) }));
 }
 export function listTPs(index) {
   return [...index.tp.values()].map(({ key, name, meters, missingMeters }) => ({ key, name, total: meters.size, missingMeters }))

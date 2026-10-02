@@ -254,9 +254,9 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .chart-mode button{padding:9px 14px;border-radius:8px;background:transparent;color:#75869b;font-size:12px;font-weight:600;min-height:36px;transition:background .18s,color .18s,box-shadow .18s}
 .chart-mode button[aria-pressed=true]{background:white;color:#315e88;box-shadow:0 1px 5px #233c5714}
 .chart-mode button:focus-visible,.notification-button:focus-visible{outline:2px solid #87b6df;outline-offset:3px}
-.year-legend span:before{height:3px;background:var(--year-color)}
-.plot-year{stroke:var(--year-color);stroke-width:2.2;stroke-linejoin:round;fill:none}
-.plot-year-dot{fill:white;stroke-width:1.8}
+.year-legend span:before{height:2px;background:var(--year-color)}
+.plot-year{stroke:var(--year-color);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;fill:none}
+.plot-year-dot{fill:white;stroke-width:1.5}.plot-year-dot.is-selected{stroke-width:1.8}
 .plot-month{font-size:9px}
 .year-reading{display:block}
 .year-readings{display:grid;gap:8px;margin-top:12px}

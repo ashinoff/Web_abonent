@@ -13,6 +13,15 @@ const sample=['909,000','926,000','937,000','892,000','918,000','875,000','898,0
 const matrix=()=>[['Полезный отпуск по всем точкам учета за Июнь 2024 г. - Август 2026 г.'],['Учебный РЭС','29.09.2026'],[],[...header],['000001','','ООО «Учебное»','009001','07001','ТП-1','Однозонный',...sample,'7 229,000']];
 const row=(account,point,tp,values,alias='')=>({account,accountKey:account,alias,point,tp,values,name:'ООО «Учебное»',zone:'Однозонный',source:point});
 const service=(rows,records=[])=>createAnalysisService(indexMonthly({rows,months,warnings:[]}),records);
+test('loading and listing TPs do not calculate all consumers; only the requested account is prepared',()=>{
+  let powerReads=0;
+  const rows=Array.from({length:100},(_,i)=>row(String(i),'P'+i,'ТП-'+Math.floor(i/10),Array(27).fill(i+1)));
+  const records=rows.map(r=>({fields:{account:r.account,point:r.point,meter:'M'+r.account,tp:r.tp,get power(){powerReads++;return '15';}}}));
+  const s=service(rows,records);assert.equal(s.summary.rowCount,100);assert.equal(s.tps().length,10);assert.equal(powerReads,0);
+  assert.equal(s.consumer('0',{}).result.total,27);assert.equal(powerReads,1);
+  assert.equal(s.consumer('0',{}).result.total,27);assert.equal(powerReads,1);
+  assert.equal(s.contour('ТП-1',{}).total,27*155);assert.equal(powerReads,11);
+});
 test('report title supplies all 27 years/months; totals are not monthly values',()=>{
   const p=parseMonthlyMatrix(matrix());assert.deepEqual(p.months,months);assert.equal(p.rows[0].values.length,27);assert.equal(p.rows[0].values.reduce((s,v)=>s+v),7229);assert.equal(p.rows[0].account,'000001');assert.equal(p.rows[0].values[26],0);
   const a=matrix();a[4][8]='';const q=parseMonthlyMatrix(a);assert.equal(q.rows[0].values[1],null);

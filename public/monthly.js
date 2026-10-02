@@ -48,12 +48,20 @@ function periodFromTitle(rows) {
   return null;
 }
 const accountHeader = s => /^(лс\s*\/\s*номер договора|лс|лс\s*\/\s*лс стек|номер договора|лицевой счет)$/.test(norm(s));
-export function parseMonthlyMatrix(matrix, { sheet = 'Лист1', worksheet = null } = {}) {
-  const h = matrix.findIndex((row, i) => i < 80 && row.some(accountHeader) && row.filter(v => month(v)).length >= 1);
+const worksheetCell = (ws, r, c) => ws?.['!data'] ? ws['!data'][r]?.[c] : ws?.[`${columnName(c)}${r + 1}`];
+export function parseMonthlyMatrix(matrix, options = {}) {
+  return parseMonthlyRows(matrix.length, r => matrix[r] || [], options);
+}
+function parseMonthlyRows(rowCount, rowAt, { sheet = 'Лист1', worksheet = null, headerAt = rowAt } = {}) {
+  const top = []; let h = -1;
+  for (let r = 0; r < Math.min(80, rowCount); r++) {
+    const row = headerAt(r); top.push(row);
+    if (row.some(accountHeader) && row.some(v => month(v))) { h = r; break; }
+  }
   if (h < 0) throw new Error('Не найдена шапка «ЛС/Номер договора» с помесячным полезным отпуском.');
-  const header = matrix[h].map(clean), cols = header.map((v, c) => ({ ...month(v), c })).filter(v => v.m != null);
+  const header = top[h].map(clean), cols = header.map((v, c) => ({ ...month(v), c })).filter(v => v.m != null);
   if (!cols.length) throw new Error('Нет столбцов с месяцами.');
-  const period = periodFromTitle(matrix.slice(0, h));
+  const period = periodFromTitle(top.slice(0, h));
   const explicit = cols.findIndex(c => c.y != null);
   let start = period ? period[0].y * 12 + period[0].m : null;
   if (start == null && explicit >= 0) start = cols[explicit].y * 12 + cols[explicit].m - explicit;
@@ -70,7 +78,7 @@ export function parseMonthlyMatrix(matrix, { sheet = 'Лист1', worksheet = nu
   const totalCol = find(/^всего.*по/);
   function identifier(row, r, col) {
     if (col < 0) return '';
-    const cell = worksheet?.[`${columnName(col)}${r + 1}`];
+    const cell = worksheetCell(worksheet, r, col);
     const value = cell?.t === 'n' ? cell.v : row[col];
     if (typeof value === 'number') {
       if (!Number.isSafeInteger(value) || Math.abs(value) >= 1e15) throw new Error(`Строка ${r + 1}: номер сохранён числом и мог быть округлён Excel. Восстановите номер в текстовом формате.`);
@@ -79,13 +87,13 @@ export function parseMonthlyMatrix(matrix, { sheet = 'Лист1', worksheet = nu
     }
     return clean(value);
   }
-  for (let r = h + 1; r < matrix.length; r++) {
-    const row = matrix[r]; if (!row.some(v => clean(v))) continue;
+  for (let r = h + 1; r < rowCount; r++) {
+    const row = rowAt(r); if (!row.some(v => clean(v))) continue;
     const account = identifier(row, r, c.account);
     if (!account || /^(итого|всего|лс\b|лицевой счет)/i.test(account)) continue;
     if (!/\d/.test(account)) { invalid++; continue; }
     const values = cols.map(({ c }) => {
-      const v = worksheet?.[`${columnName(c)}${r + 1}`]?.v ?? row[c];
+      const v = worksheetCell(worksheet, r, c)?.v ?? row[c];
       const n = numeric(v); if (n == null && clean(v) && !/^[-—–]$/.test(clean(v))) invalid++;
       return n;
     });
@@ -103,22 +111,27 @@ export function readMonthlyWorkbook(buffer, XLSX) {
   const bytes = new Uint8Array(buffer);
   const valid = [0xd0,0xcf,0x11,0xe0].every((v,i) => bytes[i] === v) || bytes[0] === 0x50 && bytes[1] === 0x4b || bytes[0] === 9 && [0,2,4,8].includes(bytes[1]);
   if (!valid) throw new Error('Выберите книгу Excel в формате XLS или XLSX.');
-  const book = XLSX.read(buffer, { type: 'array', cellHTML: false, cellNF: true, cellText: true, sheetRows: 100002 });
+  const book = XLSX.read(buffer, { type: 'array', dense: true, cellHTML: false, cellNF: true, cellText: false, cellFormula: false, sheetRows: 100002 });
   let result = null; const errors = [];
   for (const name of book.SheetNames) {
     const ws = book.Sheets[name]; if (!ws?.['!ref']) continue;
     const range = XLSX.utils.decode_range(ws['!ref']);
     if (range.e.r > 100000 || range.e.c > 255 || ws['!fullref']) throw new Error('Максимум 100 000 строк и 256 столбцов на лист.');
-    const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: true, range: { s: { r: 0, c: 0 }, e: range.e } });
+    // Read raw cells a row at a time; do not allocate a second formatted matrix.
+    const rowAt = r => Array.from({ length: range.e.c + 1 }, (_, c) => worksheetCell(ws, r, c)?.v ?? '');
+    // Format the small header only, including Excel dates displayed as MM/YYYY.
+    const headerAt = r => Array.from({ length: range.e.c + 1 }, (_, c) => {
+      const cell = worksheetCell(ws, r, c); return cell ? XLSX.utils.format_cell(cell) : '';
+    });
     let part;
-    try { part = parseMonthlyMatrix(matrix, { sheet: name, worksheet: ws }); }
+    try { part = parseMonthlyRows(range.e.r + 1, rowAt, { sheet: name, worksheet: ws, headerAt }); }
     catch (error) {
       // Non-report helper sheets can be skipped. A recognized but invalid report cannot.
       if (!/Не найдена шапка/.test(error.message)) throw new Error(`Лист «${name}»: ${error.message}`);
       errors.push(`Лист «${name}» пропущен: ${error.message}`); continue;
-    }
+    } finally { delete book.Sheets[name]; }
     if (result && JSON.stringify(result.months) !== JSON.stringify(part.months)) throw new Error('Листы содержат разные периоды отчёта. Оставьте один согласованный период.');
-    if (!result) result = part; else { result.rows.push(...part.rows); result.warnings.push(...part.warnings); }
+    if (!result) result = part; else { for (const row of part.rows) result.rows.push(row); result.warnings.push(...part.warnings); }
   }
   if (!result) throw new Error(errors[0] || 'Книга не содержит данных.');
   result.warnings.push(...errors);

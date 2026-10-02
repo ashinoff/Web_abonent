@@ -1,4 +1,4 @@
-import { splitYears, MONTH_LABELS } from './chart-years.js';
+import { splitYears, MONTH_LABELS, yearPath } from './chart-years.js';
 import { fmt, ymLabel } from './analysis-engine.js';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function mountChart(host, { months, values, group = null, baseline = null, shift = null, title = 'Потребление', scenario = null }) {
@@ -28,11 +28,10 @@ export function mountChart(host, { months, values, group = null, baseline = null
       grid += `<line class="plot-grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="plot-y" x="${L-7}" y="${y+4}">${escape(Math.abs(v)>=10000 ? fmt(v/1000,1)+'к' : fmt(v))}</text>`;
     }
     for (const series of displayed) {
-      let d = '', pen = false, dots = '';
+      const d = yearPath(series.plotted, X, Y); let dots = '';
       series.plotted.forEach((v, m) => {
-        if (v == null) { pen = false; return; }
-        d += `${pen ? 'L' : 'M'}${X(m).toFixed(1)},${Y(v).toFixed(1)}`; pen = true;
-        dots += `<circle class="plot-year-dot" cx="${X(m)}" cy="${Y(v)}" r="3"/>`;
+        if (v == null) return;
+        dots += `<circle class="plot-year-dot${m === selectedMonth ? ' is-selected' : ''}" cx="${X(m)}" cy="${Y(v)}" r="${m === selectedMonth ? 3.5 : 2.5}"/>`;
       });
       lines += `<g class="plot-year" data-year="${series.year}" data-year-color="${series.color}"><path d="${d}"/>${dots}</g>`;
     }
@@ -56,7 +55,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
     host.querySelector('.year-legend').hidden = !yearly;
     host.querySelector('.chart-reading').classList.toggle('year-reading', yearly);
     host.querySelector('.chart-note').textContent = yearly
-      ? 'Каждый цвет — отдельный год. Нажмите на месяц для сравнения. Пропуски и месяцы вне периода отчёта не считаются нулём. Сглаживание применяется внутри каждого года; значения под графиком — исходные.'
+      ? 'Каждый цвет — отдельный год. Нажмите на месяц для сравнения. Пропуски и месяцы вне периода отчёта не считаются нулём. Линии проходят через месячные точки. Сглаживание применяется только при выборе в списке; значения под графиком — исходные.'
       : 'Нажмите на график, чтобы увидеть месяц. Пропуски — нет полных данных; точки у нуля — ≤ 3 кВт·ч. Сглаживание и масштаб меняют только график.';
     if (yearly) { drawYearly(); return; }
     const W = Math.max(280, host.clientWidth || 360), H = 248, L = 47, R = 14, T = 16, B = 40, n = end - start + 1;

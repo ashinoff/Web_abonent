@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from '@e965/xlsx';
-import { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } from '../public/core.js';
+import { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, analysisRecords } from '../public/core.js';
 import { demo } from '../public/demo.js';
+test('analysis registry transfer excludes addresses, phones, notes and unrelated fields',()=>{
+  const source=parseMatrix([['ЛС','Номер ПУ','ТУ','Телефон','Примечание'],['001','0002','Точка','12345','Длинное примечание']]);
+  const compact=analysisRecords(source.records);
+  assert.equal(compact[0].fields.account,'001');assert.equal(compact[0].fields.meter,'0002');assert.equal(compact[0].fields.pointName,'Точка');
+  assert.equal('note' in compact[0].fields,false);assert.equal('phone' in compact[0].fields,false);assert.equal('values' in compact[0],false);
+  assert.equal(source.records[0].fields.note,'Длинное примечание');
+});
 
 test('leading zeroes, exact matches, duplicates and partial lookup', () => {
   const parsed = parseMatrix(demo.sheets[0].matrix);

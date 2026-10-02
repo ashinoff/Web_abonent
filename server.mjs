@@ -37,6 +37,17 @@ export function createServer() {
   const configuredUrl = (process.env.YANDEX_PUBLIC_URL || '').trim();
   const configured = validPublicUrl(configuredUrl);
   const key = configured ? new URL(configuredUrl).origin + new URL(configuredUrl).pathname : '';
+  // Coalesce only simultaneous metadata calls. No file contents or subscriber
+  // state are shared, and completed responses are not cached between refreshes.
+  const pendingMetadata = new Map();
+  function metadata(url) {
+    const key = String(url);
+    if (!pendingMetadata.has(key)) {
+      const pending = yandex(url).then(response => response.json()).finally(() => pendingMetadata.delete(key));
+      pendingMetadata.set(key, pending);
+    }
+    return pendingMetadata.get(key);
+  }
   return http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -57,22 +68,33 @@ export function createServer() {
           target.searchParams.set('limit', '100');
           target.searchParams.set('offset', String(Math.max(0, Math.min(100000, Number(url.searchParams.get('offset')) || 0))));
           target.searchParams.set('sort', 'name');
-          sendJson(res, 200, await (await yandex(target)).json()); return;
+          sendJson(res, 200, await metadata(target)); return;
         }
-        const { href } = await (await yandex(target)).json();
-        let download = href, response;
-        for (let redirect = 0; redirect < 4; redirect++) {
-          if (!validDownloadUrl(download)) throw new Error('Яндекс Диск вернул неподдерживаемый адрес скачивания.');
-          response = await fetch(download, { signal: AbortSignal.timeout(90000), redirect: 'manual' });
-          if (response.status >= 300 && response.status < 400) { download = new URL(response.headers.get('location'), download).href; await response.body?.cancel(); continue; }
-          break;
+        const { href } = await metadata(target);
+        if (res.destroyed || req.aborted) return;
+        const controller = new AbortController();
+        const disconnected = () => { if (!res.writableFinished) controller.abort(); };
+        req.on('aborted', disconnected); res.on('close', disconnected);
+        try {
+          let download = href, response;
+          for (let redirect = 0; redirect < 4; redirect++) {
+            if (!validDownloadUrl(download)) throw new Error('Яндекс Диск вернул неподдерживаемый адрес скачивания.');
+            response = await fetch(download, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90000)]), redirect: 'manual' });
+            if (response.status >= 300 && response.status < 400) { download = new URL(response.headers.get('location'), download).href; await response.body?.cancel(); continue; }
+            break;
+          }
+          if (!response?.ok) { await response?.body?.cancel(); throw new Error('Не удалось скачать реестр с Яндекс Диска.'); }
+          const lengthHeader = response.headers.get('content-length'), length = Number(lengthHeader);
+          if (length > maxBytes) { await response.body?.cancel(); sendJson(res, 413, { error: 'Размер реестра превышает 40 МБ.' }); return; }
+          let size = 0;
+          const limiter = new Transform({ transform(chunk, _, callback) { size += chunk.length; callback(size > maxBytes ? new Error('Размер файла превышает 40 МБ.') : null, chunk); } });
+          const headers = { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' };
+          if (lengthHeader && Number.isSafeInteger(length) && length >= 0 && (!response.headers.get('content-encoding') || response.headers.get('content-encoding') === 'identity')) headers['Content-Length'] = length;
+          res.writeHead(200, headers);
+          await pipeline(Readable.fromWeb(response.body), limiter, res, { signal: controller.signal }); return;
+        } finally {
+          controller.abort(); req.off('aborted', disconnected); res.off('close', disconnected);
         }
-        if (!response?.ok) throw new Error('Не удалось скачать реестр с Яндекс Диска.');
-        if (Number(response.headers.get('content-length')) > maxBytes) { await response.body?.cancel(); sendJson(res, 413, { error: 'Размер реестра превышает 40 МБ.' }); return; }
-        let size = 0;
-        const limiter = new Transform({ transform(chunk, _, callback) { size += chunk.length; callback(size > maxBytes ? new Error('Размер файла превышает 40 МБ.') : null, chunk); } });
-        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' });
-        await pipeline(Readable.fromWeb(response.body), limiter, res); return;
       }
       const path = resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
       if (!path.startsWith(root.endsWith(sep) ? root : root + sep)) { sendJson(res, 403, { error: 'Нет доступа.' }); return; }
@@ -81,6 +103,7 @@ export function createServer() {
       res.writeHead(200, { 'Content-Type': types[extname(path)] || 'application/octet-stream', 'Content-Length': info.size, 'Cache-Control': 'no-cache' });
       if (req.method === 'HEAD') res.end(); else await pipeline(createReadStream(path), res);
     } catch (error) {
+      if (res.destroyed) return;
       if (res.headersSent) { res.destroy(); return; }
       sendJson(res, error.code === 'ENOENT' ? 404 : error.status || 502, { error: error.code === 'ENOENT' ? 'Страница не найдена.' : error.message || 'Сервис временно недоступен.' });
     }
