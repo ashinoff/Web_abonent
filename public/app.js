@@ -5,6 +5,7 @@ import { initSourceFiles } from './source-files.js';
 import { attachDialogSwipe } from './gestures.js';
 import { groupRecordFields } from './record-sections.js';
 import { initAnalysisUI } from './analysis-ui.js';
+import { initNotesUI } from './notes-ui.js';
 import { calculateReading } from './readings.js';
 
 const $ = selector => document.querySelector(selector);
@@ -101,6 +102,7 @@ function showRes() {
 }
 function rootUrl() { return clean(config.publicUrl); }
 function renderIndicators() {
+  notesUI.update(summary, busy);
   const diskText = diskState === 'connected' ? 'Общая папка доступна' : diskState === 'checking' ? 'Проверяем подключение…' : sourceState === 'missing' ? 'Общая папка не подключена' : 'Не удалось прочитать папку';
   const registryText = registryState === 'ready' || summary ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : pending ? 'Подтвердите столбцы в настройках' : registryError || (registryState === 'missing' ? 'Файл реестра не найден' : registryState === 'error' ? 'Реестр не загружен' : 'Сначала выберите РЭС');
   const consumptionText = consumptionState === 'ready' ? 'Готов к анализу: ' + (consumptionFile?.name || 'Демонстрация') : consumptionState === 'checking' ? `Читаем «${consumptionFile?.name || CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
@@ -397,6 +399,7 @@ async function readConsumptionFile() {
   if (op === operation) setBusy(false);
 }
 function clearDataset(keepDirectory = false) {
+  notesUI.reset();
   operation++; consumptionInfo = null; incomingInfo = null; registryError = ''; resetMonthly(); analysisUI.reset(); incomingFile=null; incomingState='idle'; incomingError=''; if (keepDirectory) { if (consumptionFile) consumptionState='checking'; } else { consumptionFile=null; consumptionState='idle'; consumptionError=''; } searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
   tpVersion++; recordVersion++; tpChoices = []; tpSelection = null; tpMeters = []; tpBusy = false; if (!keepDirectory) { folderItems = []; filesState = 'idle'; filesError = ''; }
   tpViewKey = ''; tpPickerQuery = ''; tpPickerScroll = 0; clearTimeout(tpFilterTimer);
@@ -623,12 +626,13 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
       $('#record-body').insertAdjacentHTML('afterbegin', `<div class="record-variants"><label for="record-variant">Строки этого ПУ в реестре: ${context.variants.length}</label><select id="record-variant">${context.variants.map(v => `<option value="${esc(v.id)}" ${v.id === id ? 'selected' : ''}>${esc([pointText(v), 'ЛС ' + (v.account || '—'), v.sheet + ', строка ' + v.row].join(' · '))}</option>`).join('')}</select></div>`);
     }
     $('#record-back').hidden = !context.parent;
-    $('#record-back').setAttribute('aria-label', context.parent === 'tp-dialog' ? 'К списку ПУ' : 'К результатам');
+    $('#record-back').setAttribute('aria-label', context.parent === 'tp-dialog' ? 'К списку ПУ' : context.parent === 'notes-dialog' ? 'К примечаниям' : 'К результатам');
     if (context.parent) { if (!$('#record-dialog').open) $('#record-dialog').showModal(); }
     else openDialog('record-dialog');
     $('#record-body').scrollTop = 0;
   } catch (error) { message('#form-message', error.message); }
 }
+const notesUI = initNotesUI({ request: rpc, openDialog, openRecord });
 const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings });
 $('#record-body').addEventListener('click', e => { if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName }); });
 $('#contour-open').addEventListener('click', analysisUI.openTPs);

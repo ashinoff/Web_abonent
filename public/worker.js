@@ -28,7 +28,7 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result }); return;
     }
     if (action === 'analysisRecords') { self.postMessage({ id, result: (index?.records || []).map(({ fields }) => ({ fields })) }); return; }
-    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP } = await core;
+    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, listNotes } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {
       sourceSheets = []; sheets = []; index = null;
@@ -59,10 +59,13 @@ self.onmessage = async ({ data }) => {
       }
       if (!sheets.length) throw new Error(skipped[0]?.error || 'В файле нет доступных строк реестра.');
       index = buildIndex(sheets);
-      self.postMessage({ id, result: { count: index.records.length, skipped, sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })) } });
+      self.postMessage({ id, result: { count: index.records.length, notesCount: index.notes.length, hasNotesColumn: index.hasNotesColumn, skipped, sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })) } });
     } else if (action === 'search') {
       if (!index) throw new Error('Сначала откройте реестр.');
       self.postMessage({ id, result: search(index, payload) });
+    } else if (action === 'notes') {
+      if (!index) throw new Error('Сначала откройте реестр.');
+      self.postMessage({ id, result: listNotes(index, payload) });
     } else if (action === 'tps' || action === 'tpMeters') {
       if (!index) throw new Error('Сначала откройте реестр.');
       self.postMessage({ id, result: action === 'tps' ? listTPs(index) : metersByTP(index, payload) });

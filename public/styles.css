@@ -238,3 +238,30 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .flag-card h4{margin:0}.reading-calculator output{padding-left:5px}.analysis-dialog .dialog-header{gap:10px}
 
 .dialog-surface{overflow:clip}.chart-scrubber{display:block;margin:4px 0 10px}.month-scrubber{display:block;width:100%;height:24px;accent-color:#7198b8}.reading-calculator output{padding:8px 9px;background:#edf4f9;border:1px solid #d5e0eb;border-radius:8px}
+
+/* Calendar comparison and registry notes share the existing compact controls. */
+.header-actions{display:flex;align-items:center;gap:14px;margin-left:auto}
+.notification-button{position:relative;flex:0 0 42px;width:42px;height:42px;display:grid;place-items:center;border:1px solid #ffffff35;border-radius:12px;background:#ffffff0d;color:#fff}
+.notification-button svg{width:22px;height:22px}
+.notification-button:disabled{opacity:.4;cursor:default}
+.notification-badge{position:absolute;top:-7px;right:-8px;min-width:21px;height:21px;padding:0 5px;border:2px solid var(--navy);border-radius:12px;background:#ed4d57;color:white;font-size:11px;font-weight:700;line-height:17px;text-align:center;font-variant-numeric:tabular-nums}
+#notes-dialog .tp-header{display:block;padding-bottom:18px}
+.note-location,.note-source{display:block;color:#8090a3;font-size:11px;line-height:1.6;margin-top:8px;overflow-wrap:anywhere}
+.note-text{display:grid;gap:7px;margin-top:14px;padding:12px 14px;background:#fff5e8;border:1px solid #f0dfc5;border-radius:9px;color:#755939;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.note-text .number-label{color:#a37b49}
+.note-source{font-size:10px}
+.chart-mode{display:inline-flex;gap:3px;padding:4px;margin:13px 0 2px;background:#eef2f7;border:1px solid #e1e7ef;border-radius:11px}
+.chart-mode button{padding:9px 14px;border-radius:8px;background:transparent;color:#75869b;font-size:12px;font-weight:600;min-height:36px;transition:background .18s,color .18s,box-shadow .18s}
+.chart-mode button[aria-pressed=true]{background:white;color:#315e88;box-shadow:0 1px 5px #233c5714}
+.chart-mode button:focus-visible,.notification-button:focus-visible{outline:2px solid #87b6df;outline-offset:3px}
+.year-legend span:before{height:3px;background:var(--year-color)}
+.plot-year{stroke:var(--year-color);stroke-width:2.2;stroke-linejoin:round;fill:none}
+.plot-year-dot{fill:white;stroke-width:1.8}
+.plot-month{font-size:9px}
+.year-reading{display:block}
+.year-readings{display:grid;gap:8px;margin-top:12px}
+.year-readings>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px}
+.year-readings strong{color:var(--year-color);white-space:nowrap}
+.year-readings strong:before{content:'';display:inline-block;width:8px;height:8px;background:var(--year-color);border-radius:50%;margin-right:7px}
+@media(max-width:700px){.header-actions{gap:12px}.header-actions .settings-button{width:40px;padding:0;justify-content:center}.header-actions .settings-button span{display:none}.header-inner{gap:10px}.notification-button{width:40px;height:40px;flex-basis:40px}}
+@media(prefers-reduced-motion:reduce){.chart-mode button{transition:none}}

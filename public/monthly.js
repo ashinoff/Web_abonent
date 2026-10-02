@@ -39,8 +39,9 @@ function month(value) {
   return null;
 }
 function periodFromTitle(rows) {
-  for (const row of rows) for (const cell of row) {
-    const s = norm(cell); if (!/полезный отпуск|за период|период/.test(s)) continue;
+  for (const row of rows) {
+    // A report title may occupy a merged cell or several adjacent cells.
+    const s = norm(row.join(' ')); if (!/полезный отпуск|за период|период/.test(s)) continue;
     const named = [...s.matchAll(new RegExp('(' + MONTHS.join('|') + ')[а-я]*\\s+(20\\d{2})', 'g'))];
     if (named.length >= 2) return [month(named[0][0]), month(named[named.length - 1][0])];
   }

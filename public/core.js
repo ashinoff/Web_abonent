@@ -10,6 +10,7 @@ const aliases = {
   phone: ['телефон', 'контактный телефон'], status: ['состояние ту', 'статус', 'состояние'],
   model: ['вид счетчика', 'тип счетчика', 'модель счетчика', 'тип пу'],
   receipt: ['показания с квитанции показания', 'показания с квитанции'],
+  note: ['примечание', 'примечания'],
   transformerRatio: ['коэффициент трансформации', 'коэфициент трансформации', 'коэф. трансформации', 'коэф трансформации', 'коэффициент трансформации тт', 'коэф тт', 'коэф. тт', 'прибор учета коэффициент трансформации', 'прибор учета коэфициент трансформации'],
   station: ['подстанция', 'пс'], feeder: ['фидер10', 'фидер 10', 'фидер'], tp: ['тп'],
   power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер точки учета', 'код точки учета'],
@@ -18,6 +19,7 @@ const aliases = {
 export function fieldKey(label) {
   const parts = norm(label).split(' · ').reverse();
   for (const part of parts) {
+    if (/^примечани[ея](?: \(\d+\))?$/.test(part)) return 'note';
     for (const [key, options] of Object.entries(aliases)) if (options.includes(part)) return key;
   }
   return null;
@@ -112,6 +114,17 @@ export function parseMatrix(matrix, { sheet = 'Лист1', file = '', merges = [
 }
 export function buildIndex(sheets) {
   const records = sheets.flatMap(s => s.records);
+  // Count populated source cells, without deduplicating meters, accounts or text.
+  const notes = [];
+  let hasNotesColumn = false;
+  for (const sheet of sheets) {
+    const columns = sheet.layout.labels.flatMap((label, c) => fieldKey(label) === 'note' ? [c] : []);
+    hasNotesColumn ||= columns.length > 0;
+    for (const record of sheet.records) for (const c of columns) {
+      const note = clean(record.values[c]);
+      if (note) notes.push({ id: record.id, fields: record.fields, address: record.address, sheet: record.sheet, row: record.row, note });
+    }
+  }
   const meter = new Map(), account = new Map(), tp = new Map();
   records.forEach((record, index) => {
     for (const [map, key] of [[meter, record.meterKey], [account, record.accountKey]]) {
@@ -128,7 +141,12 @@ export function buildIndex(sheets) {
       }
     }
   });
-  return { records, meter, account, tp };
+  return { records, meter, account, tp, notes, hasNotesColumn };
+}
+export function listNotes(index, { query = '', offset = 0, limit = 100 } = {}) {
+  const q = norm(query);
+  const found = index.notes.filter(r => !q || norm([r.note, r.fields.meter, r.fields.account, r.fields.name, r.fields.tp, r.fields.point, r.fields.pointNumber, r.fields.pointName, r.address].filter(Boolean).join(' ')).includes(q));
+  return { total: found.length, totalInRegistry: index.notes.length, notes: found.slice(offset, offset + Math.min(limit, 200)) };
 }
 export function listTPs(index) {
   return [...index.tp.values()].map(({ key, name, meters, missingMeters }) => ({ key, name, total: meters.size, missingMeters }))
