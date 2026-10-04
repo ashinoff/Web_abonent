@@ -51,6 +51,7 @@ test('Photon proxy shares rate limiting, caches results and cancels queued work 
   } });
   const first = await geocoder.lookup('Тестовый, Учебная, д. 12');
   assert.equal(first[0].lat,44.6); assert.equal(calls[0].url.searchParams.get('countrycode'),'RU');
+  assert.equal(calls[0].url.searchParams.get('q'),'Россия, Тестовый, Учебная, 12');
   await geocoder.lookup('Тестовый, Учебная, д. 12'); assert.equal(calls.length,1);
   const next = geocoder.lookup('Тестовый, Учебная, д. 13'), abort = new AbortController();
   const cancelled = geocoder.lookup('Тестовый, Учебная, д. 14',{ signal:abort.signal }); abort.abort();

@@ -31,7 +31,10 @@ export function createMapGeocoder({ fetcher = globalThis.fetch, intervalMs = 110
         const signal = AbortSignal.any([AbortSignal.timeout(10000), ...(job.signal ? [job.signal] : [])]);
         await delay(Math.max(0, nextAt - Date.now()), undefined, { signal });
         nextAt = Date.now() + intervalMs;
-        const url = new URL(service); url.searchParams.set('q', 'Россия, ' + job.address);
+        // Photon can mistake «д.» for the house suffix Д. Query the number
+        // without that label; preserve actual suffixes such as 51А and 51/2.
+        const query = job.address.replace(/(^|[,\s])(?:д\.?|дом)\s*(?=\d)/giu,'$1');
+        const url = new URL(service); url.searchParams.set('q', 'Россия, ' + query);
         url.searchParams.set('limit','5'); url.searchParams.set('countrycode','RU');
         const response = await fetcher(url, { signal,redirect:'error',headers:{ 'User-Agent':'WebAbonent/1.0 (+https://github.com/ashinoff/Web_abonent)', 'Accept':'application/json', 'Accept-Language':'ru' } });
         if (!response.ok) throw failure(response.status === 429 ? 'Сервис карты ограничил запросы. Повторите позже.' : 'Сервис карты временно недоступен.', response.status === 429 ? 429 : 502);
