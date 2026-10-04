@@ -28,9 +28,9 @@ async function memoryBudget() {
   return Math.min(8192, Math.max(256, detected ? Math.min(detected, configured || detected) : configured || 512));
 }
 export function preparationLimits(containerMB) {
-  const heapMB = Math.min(768, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.35));
-  const childMB = Math.min(1200, 160 + Math.floor(Math.max(0, containerMB - 512) * 0.5));
-  const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * 0.8)));
+  const heapMB = Math.min(1536, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.75));
+  const childMB = Math.min(2000, 160 + Math.max(0, containerMB - 512));
+  const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * 0.85)));
   const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
   return { heapMB, childMB, combinedMB, packageMB };
 }
