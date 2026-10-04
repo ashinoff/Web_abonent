@@ -12,7 +12,7 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js';
+import { listOfflineCopies } from './prepared-cache.js?v=9';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -36,6 +36,7 @@ let folderItems = [], filesState = 'idle', filesError = '', registryError = '', 
 let directoryOffline = false;
 let shellReady = false;
 let offlineChoices = [], offlineSource = '', offlineListVersion = 0;
+let offlineAvailabilityVersion = 0;
 let tpChoices = [], tpSelection = null, tpMeters = [], tpVersion = 0, tpBusy = false, recordVersion = 0;
 let recordContext = { parent: null, variants: [] };
 let tpViewKey = '', tpPickerQuery = '', tpPickerScroll = 0, tpFilterTimer = null;
@@ -45,7 +46,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=9', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
@@ -121,6 +122,7 @@ function setBusy(value, text = '') {
   $('#res-button').disabled = !selectedFolder;
   if (text || !value) message('#settings-message', text, value);
   updateSource(); renderIndicators(); renderResults();
+  if (!value) refreshOfflineAvailability();
 }
 function openDialog(id) {
   for (const dialog of document.querySelectorAll('dialog[open]')) if (dialog.id !== id) dialog.close();
@@ -138,8 +140,26 @@ function showRes() {
   if (resState === 'error' && !busy) openFolder(selectedFolder, { choose: true });
 }
 function rootUrl() { return clean(config.publicUrl); }
+function offlineRoot() { return rootUrl() || prefs.root || ''; }
+function renderOfflineAvailability(copies, error = false) {
+  const count = copies.filter(copy => copy.files.some(file => file.role === 'registry')).length;
+  const button = $('#offline-open');
+  button.dataset.state = count ? 'on' : 'off';
+  button.dataset.copyCount = String(count);
+  button.title = error ? 'Не удалось прочитать сохранённые РЭС' : count ? `На телефоне: ${count} РЭС. Выбрать сохранённую копию` : 'На телефоне пока нет реестров для работы без интернета';
+  button.setAttribute('aria-label', 'Выбрать РЭС, сохранённую на телефоне. ' + button.title);
+}
+async function refreshOfflineAvailability() {
+  const version = ++offlineAvailabilityVersion, source = offlineRoot();
+  try {
+    const copies = await listOfflineCopies(source);
+    if (version === offlineAvailabilityVersion && source === offlineRoot()) renderOfflineAvailability(copies);
+  } catch {
+    if (version === offlineAvailabilityVersion && source === offlineRoot()) renderOfflineAvailability([], true);
+  }
+}
 async function showOfflineCopies() {
-  const version = ++offlineListVersion, source = rootUrl() || prefs.root || '';
+  const version = ++offlineListVersion, source = offlineRoot();
   openDialog('offline-dialog');
   const list = $('#offline-list');
   offlineChoices = []; offlineSource = source;
@@ -147,7 +167,8 @@ async function showOfflineCopies() {
   list.innerHTML = '<div class="enterprise-loading" role="status"><span class="loading-indicator" aria-hidden="true"></span><span>Читаем сохранённые РЭС…</span></div>';
   try {
     const copies = await listOfflineCopies(source);
-    if (version !== offlineListVersion || !$('#offline-dialog').open || source !== (rootUrl() || prefs.root || '')) return;
+    if (version !== offlineListVersion || !$('#offline-dialog').open || source !== offlineRoot()) return;
+    renderOfflineAvailability(copies);
     offlineChoices = copies.sort((a, b) => a.resPath.localeCompare(b.resPath, 'ru'));
     const enterprises = offlineDirectory(copies, '/') || [];
     list.innerHTML = copies.length ? copies.map((copy, i) => {
@@ -164,7 +185,7 @@ async function showOfflineCopies() {
 }
 async function selectOfflineRes(i) {
   const copy = offlineChoices[i], source = offlineSource;
-  if (!copy?.files.some(file => file.role === 'registry') || source !== (rootUrl() || prefs.root || '')) return;
+  if (!copy?.files.some(file => file.role === 'registry') || source !== offlineRoot()) return;
   const savedDirectory = path => {
     try { const items = JSON.parse(localStorage.getItem('abonent.folder.v1:' + source + ':' + path) || 'null'); if (Array.isArray(items)) return items.filter(item => item.type === 'dir'); } catch {}
     return offlineDirectory(offlineChoices, path) || [];
@@ -255,6 +276,7 @@ async function readConfiguration(signal = loads.signal) {
   if (!loads.current(signal)) return;
   if (sourceState !== 'ready') { diskState = 'disconnected'; directoryState = 'error'; consumptionFile = null; consumptionState = selectedRes ? 'error' : 'idle'; registryState = selectedRes ? 'error' : 'idle'; }
   renderSourceState();
+  refreshOfflineAvailability();
 }
 function validateRoot(value) {
   try { const u = new URL(value); if (u.protocol === 'https:' && !u.username && !u.password && !u.port && ['disk.yandex.ru', 'disk.yandex.com', 'disk.yandex.net', 'disk.360.yandex.ru', 'yadi.sk'].includes(u.hostname) && /^\/(d|i)\/[\w-]+\/?$/.test(u.pathname)) return `${u.origin}${u.pathname}`; } catch {}
@@ -872,6 +894,8 @@ const loadMap = initLoadMap(rootUrl, {
   },
   beforeDelete(source, resPath) { if (source === rootUrl() && resPath === selectedRes?.path && busy) stopLoading(); },
   async onCopiesChanged(source, resPath, action) {
+    if (source !== rootUrl()) return;
+    await refreshOfflineAvailability();
     if (source !== rootUrl() || resPath !== selectedRes?.path) return;
     const copy = action === 'delete' ? null : (await listOfflineCopies(source)).find(item => item.resPath === resPath);
     if (source !== rootUrl() || resPath !== selectedRes?.path) return;
@@ -985,10 +1009,23 @@ $('#example-queries').addEventListener('click', e => { const b = e.target.closes
 $('#record-body').addEventListener('click', async e => { if (!e.target.closest('#copy-record') || !activeRecord) return; try { await navigator.clipboard.writeText(activeRecord.labels.map((label, i) => `${label}: ${activeRecord.values[i] || '—'}`).join('\n')); toast('Данные скопированы'); } catch { toast('Браузер не разрешил копирование. Выделите текст карточки.'); } });
 
 renderResults(); renderIndicators(); renderFolders();
+refreshOfflineAvailability();
+window.addEventListener('focus', refreshOfflineAvailability);
+window.addEventListener('pageshow', refreshOfflineAvailability);
+if ('serviceWorker' in navigator) {
+  let controlled = Boolean(navigator.serviceWorker.controller), refreshed = false;
+  navigator.serviceWorker.addEventListener?.('controllerchange', () => {
+    if (!controlled) { controlled = true; return; }
+    if (!refreshed) { refreshed = true; location.reload(); }
+  });
+}
 const startupSignal = loads.signal;
 await readConfiguration(startupSignal);
 if (proxy && config.prepared && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./service-worker.js').catch(() => navigator.serviceWorker.getRegistration()).then(registration => registration && navigator.serviceWorker.ready).then(registration => {
+  navigator.serviceWorker.register('./service-worker.js', { updateViaCache:'none' }).catch(() => navigator.serviceWorker.getRegistration()).then(registration => {
+    if (registration?.update) registration.update().catch(() => {});
+    return registration && navigator.serviceWorker.ready;
+  }).then(registration => {
     if (!registration) return;
     shellReady = true; renderIndicators();
   }).catch(() => { /* Online mode remains available. */ });

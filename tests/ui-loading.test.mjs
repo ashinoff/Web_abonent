@@ -37,7 +37,9 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
   t.mock.method(globalThis, 'clearTimeout', timer => { timers.delete(timer); clearTimer(timer); });
   const page = new Window({ url:'https://app.example.test/', settings:{ disableCSSFileLoading:true, disableJavaScriptFileLoading:true } });
   page.document.write(await readFile(new URL('../public/index.html', import.meta.url), 'utf8'));
-  const nav = { onLine:true, storage:{ estimate:async () => ({ quota:1e9,usage:0 }) }, serviceWorker:{ register:async () => ({}), ready:Promise.resolve({}) } };
+  const controllerListeners = []; let reloads = 0, updates = 0, registerOptions;
+  const nav = { onLine:true, storage:{ estimate:async () => ({ quota:1e9,usage:0 }) }, serviceWorker:{ controller:{}, addEventListener:(name, listener) => { if (name === 'controllerchange') controllerListeners.push(listener); }, register:async (_url, options) => { registerOptions = options; return { update:async () => { updates++; } }; }, ready:Promise.resolve({}) } };
+  t.mock.method(page.location, 'reload', () => { reloads++; });
   for (const [key,value] of Object.entries({ window:page, document:page.document, localStorage:page.localStorage, location:page.location, navigator:nav, indexedDB:new IDBFactory(),
     requestAnimationFrame:page.requestAnimationFrame.bind(page), cancelAnimationFrame:page.cancelAnimationFrame.bind(page), matchMedia:()=>({ matches:true }) }))
     Object.defineProperty(globalThis,key,{ value, configurable:true, writable:true });
@@ -104,6 +106,9 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
 
   await t.test('offline button is next to the indicators and explains an empty phone without using the network', async () => {
     assert.ok($('.source-indicators #offline-open'));
+    assert.equal($('#offline-open').textContent, '');
+    assert.equal($('#offline-open use').getAttribute('href'), '#i-wifi-off');
+    assert.ok($('#offline-open .status-light'));
     const before = networkCalls.length;
     $('#offline-open').click();
     await until(() => $('#offline-list').getAttribute('aria-busy') === 'false','empty offline list');
@@ -111,6 +116,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     assert.match($('#offline-list').textContent, /пока нет сохранённых РЭС/);
     assert.equal($('#offline-list').querySelectorAll('[data-offline-res]').length, 0);
     assert.equal(networkCalls.length, before);
+    assert.equal($('#offline-open').dataset.state, 'off');
     $('#offline-dialog').close();
   });
 
@@ -130,6 +136,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     await until(() => $('#results').textContent.includes('Вымышленный абонент'),'search after stop');
     slowMonthly.resolve(); await delay(20);
     assert.equal($('#consumption-indicator').dataset.state,'off'); assert.equal($('#registry-indicator').dataset.state,'on');
+    await until(() => $('#offline-open').dataset.state === 'on', 'green offline lamp after registry is saved');
   });
   await t.test('a late enterprise directory cannot replace the newly selected enterprise', async () => {
     folderDelay = deferred(); $('#district-button').click(); enterprise('ЭС А').click();
@@ -204,5 +211,27 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     assert.equal($('#consumption-indicator').dataset.state, 'off'); assert.equal($('#incoming-indicator').dataset.state, 'off');
     assert.equal($('#search-submit').disabled, false); assert.equal($('#settings-dialog').open, false);
     assert.equal(networkCalls.length, beforeRequests);
+  });
+  await t.test('offline lamp turns red when the last copy is deleted and green for a downloaded unselected RES', async () => {
+    $('#settings-open').click(); $('#load-map-tab').click();
+    await until(() => row('Готовая РЭС')?.querySelector('[data-offline-action="delete"]'),'map with last remaining copy');
+    row('Готовая РЭС').querySelector('[data-offline-action="delete"]').click();
+    await until(() => $('#offline-open').dataset.state === 'off','red lamp after last local registry is deleted');
+    assert.equal($('#offline-open').dataset.copyCount, '0');
+    assert.equal($('#registry-indicator').dataset.state, 'on');
+    nav.onLine = true; $('#load-map-refresh').click();
+    await until(() => row('Другая РЭС')?.querySelector('[data-offline-action="download"]')?.disabled === false,'online download controls');
+    row('Другая РЭС').querySelector('[data-offline-action="download"]').click();
+    await until(() => $('#offline-open').dataset.state === 'on','green lamp for unselected downloaded RES');
+    assert.equal($('#offline-open').dataset.copyCount, '1');
+    assert.equal($('#res-label').textContent, 'Готовая РЭС');
+  });
+  await t.test('a complete shell upgrade refreshes once and retains saved data', async () => {
+    assert.equal(registerOptions.updateViaCache, 'none'); assert.equal(updates, 1);
+    const before = await listOfflineCopies(source);
+    controllerListeners.forEach(listener => listener());
+    controllerListeners.forEach(listener => listener());
+    assert.equal(reloads, 1);
+    assert.deepEqual(await listOfflineCopies(source), before);
   });
 });

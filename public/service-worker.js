@@ -1,4 +1,4 @@
-const version = 'abonent-shell-2026-10-04-v8';
+const version = 'abonent-shell-2026-10-04-v9';
 const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./worker.js',
   './core.js','./monthly.js','./analysis-service.js','./analysis-engine.js','./analysis-settings.js',
   './analysis-tuning.js','./analysis-ui.js','./analysis-help.js','./diagnostics-ui.js','./analysis-chart.js','./chart-years.js','./demo.js',
@@ -6,7 +6,7 @@ const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./wo
   './source-files.js','./source.js','./workbook-check.js','./prepared-data.js','./prepared-cache.js','./load-map.js','./load-session.js','./offline-copies.js',
   './vendor/xlsx.full.min.js','./favicon.svg','./rosseti-logo.svg'];
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(version).then(cache => cache.addAll(shell)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(version).then(cache => cache.addAll(shell.map(url => new Request(new URL(url, self.location.href), { cache:'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(Promise.all([caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('abonent-shell-') && key !== version).map(key => caches.delete(key)))), self.clients.claim()]));
@@ -14,11 +14,12 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.includes('/api/')) return;
-  // Keep navigation network-first; use the complete, versioned shell for assets.
+  // HTML and modules always come from the same complete shell version.
+  // Registration checks the network for updates; controllerchange refreshes the page.
   if (event.request.mode === 'navigate') {
-    event.respondWith(fetch(event.request).then(response => response.ok ? response : caches.match(event.request, { ignoreSearch:true }).then(saved => saved || response))
-      .catch(() => caches.match(event.request).then(saved => saved || caches.match('./index.html').then(page => page || Response.error()))));
+    event.respondWith(caches.open(version).then(async cache =>
+      await cache.match(event.request, { ignoreSearch:true }) || await cache.match('./index.html') || fetch(event.request)));
   } else {
-    event.respondWith(caches.match(event.request).then(saved => saved || fetch(event.request)));
+    event.respondWith(caches.open(version).then(cache => cache.match(event.request, { ignoreSearch:true })).then(saved => saved || fetch(event.request)));
   }
 });
