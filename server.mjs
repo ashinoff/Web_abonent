@@ -7,7 +7,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { createPreparedStore } from './prepared-store.mjs';
-import { createPreparedService } from './prepared-service.mjs';
+import { createPreparedService, preparationMemory } from './prepared-service.mjs';
 import { createMapGeocoder } from './map-geocoder.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
@@ -139,7 +139,7 @@ export function createServer(options = {}) {
           }
         }
         sendJson(res, 200, { source: { state: configured ? 'configured' : 'error', issue: configured ? null : configuredUrl ? 'invalid_url' : 'not_configured' },
-          database, catalog, sync: syncStatus }); return;
+          database, catalog, sync: syncStatus, memory: await preparationMemory() }); return;
       }
       if (url.pathname === '/api/load-map') {
         if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Карта загрузки доступна после подключения базы данных.' }); return; }

@@ -57,3 +57,25 @@ test('diagnostics reports a connected but unfilled catalog separately', async ()
     else process.env.YANDEX_PUBLIC_URL = original;
   }
 });
+
+test('diagnostics reports the memory budget and never raises the detected container limit', async () => {
+  const original = process.env.PREPARE_MEMORY_MB;
+  process.env.PREPARE_MEMORY_MB = '2048';
+  const server = createServer();
+  await listen(server);
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/diagnostics`);
+    assert.equal(response.status, 200);
+    const { memory } = await response.json();
+    assert.equal(memory.configuredMB, 2048);
+    assert.equal(memory.containerMB, Math.min(memory.detectedMB || 2048, 2048));
+    assert.equal(memory.source, memory.detectedMB ? 'cgroup' : 'env');
+    assert.ok(memory.heapMB > 0 && memory.childMB > 0);
+    assert.ok(memory.combinedMB < memory.containerMB);
+    assert.ok(memory.packageMB > 0);
+  } finally {
+    await close(server);
+    if (original === undefined) delete process.env.PREPARE_MEMORY_MB;
+    else process.env.PREPARE_MEMORY_MB = original;
+  }
+});

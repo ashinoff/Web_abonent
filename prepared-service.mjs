@@ -25,10 +25,21 @@ async function memoryBudget() {
   }
   const override = Number(process.env.PREPARE_MEMORY_MB);
   const configured = Number.isInteger(override) && override >= 512 && override <= 8192 ? override : null;
-  return Math.min(8192, Math.max(256, detected ? Math.min(detected, configured || detected) : configured || 512));
+  return {
+    containerMB: Math.min(8192, Math.max(256, detected ? Math.min(detected, configured || detected) : configured || 512)),
+    detectedMB: detected || null, configuredMB: configured,
+    source: detected ? 'cgroup' : configured ? 'env' : 'fallback',
+  };
+}
+export async function preparationMemory() {
+  const budget = await memoryBudget();
+  return { ...budget, ...preparationLimits(budget.containerMB) };
 }
 export function preparationLimits(containerMB) {
-  const heapMB = Math.min(1536, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.75));
+  // XLSX also retains inflated XML outside V8's heap. A smaller heap encourages
+  // collection before those buffers push the whole child over the RSS guard.
+  const heapMB = Math.min(1536, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.75),
+    512 + Math.floor(Math.max(0, containerMB - 1024) * 0.25));
   const childMB = Math.min(2000, 160 + Math.max(0, containerMB - 512));
   const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * 0.85)));
   const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
@@ -107,7 +118,7 @@ export function createPreparedService({ source, store, yandex }) {
     try {
       const path = join(directory, 'workbook');
       const output = join(directory, 'package.json');
-      const containerMB = await memoryBudget();
+      const { containerMB } = await memoryBudget();
       await runLimitedChild([path, output, role, filename], containerMB);
       const { packageMB } = preparationLimits(containerMB);
       if ((await stat(output)).size > packageMB * 1048576) throw new Error(`Пакет Excel превышает лимит ${packageMB} МБ.`);

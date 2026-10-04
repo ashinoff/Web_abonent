@@ -131,6 +131,7 @@ test('workbook preparation respects 512 MB containers and expands with a larger 
   assert.deepEqual(preparationLimits(512), {heapMB:128,childMB:160,combinedMB:320,packageMB:64});
   assert.deepEqual(preparationLimits(1024), {heapMB:512,childMB:672,combinedMB:832,packageMB:128});
   const larger=preparationLimits(2048);
+  assert.equal(larger.heapMB,768);
   assert.ok(larger.heapMB > 128 && larger.childMB > 160 && larger.packageMB > 64);
   assert.ok(larger.combinedMB < 2048);
 });
