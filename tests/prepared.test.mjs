@@ -97,6 +97,8 @@ test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplic
     const config = await (await realFetch(base+'/api/config')).json(); assert.equal(config.prepared,true);
     assert.equal((await realFetch(base+'/api/prepared?path=%2F..%2Fsecret.xlsx&role=registry')).status,400);
     const url=base+'/api/prepared?path='+encodeURIComponent('/РЭС/Расширенный список.xlsx')+'&role=registry';
+    assert.equal((await realFetch(url,{method:'HEAD'})).status,404);
+    assert.equal(downloads,0,'HEAD does not trigger workbook preparation');
     const responses = await Promise.all(Array.from({length:5}, () => realFetch(url)));
     assert.ok(responses.every(x => x.ok));
     const packs = await Promise.all(responses.map(r => r.json()));
@@ -104,6 +106,7 @@ test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplic
     assert.equal(downloads,1);
     const unchanged = await realFetch(url); assert.equal(unchanged.headers.get('x-prepared-stale'),'0');
     const revision = unchanged.headers.get('etag');
+    assert.equal((await realFetch(url,{method:'HEAD'})).headers.get('etag'),revision);
     const before304 = fullReads;
     const repeated = await realFetch(url, { headers: { 'If-None-Match': revision } });
     assert.equal(repeated.status,304); assert.equal(await repeated.text(),'');
@@ -169,4 +172,61 @@ test('folder map records ready and missing sources without exposing workbooks', 
     await new Promise(resolve => server.close(resolve));
     if (previous === undefined) delete process.env.YANDEX_PUBLIC_URL; else process.env.YANDEX_PUBLIC_URL=previous;
   }
+});
+
+test('startup scans the catalog without downloading workbooks and prepares one file at a time', async t => {
+  const source = 'https://disk.yandex.ru/d/CatalogTest', workbook = registry(), entries = new Map(), folders = new Map();
+  const path = '/ЭС/РЭС/Расширенный список.xlsx';
+  const tree = { '/': [{type:'dir',name:'ЭС',path:'/ЭС'}],
+    '/ЭС': [{type:'dir',name:'РЭС',path:'/ЭС/РЭС'}],
+    '/ЭС/РЭС': [{type:'file',name:'Расширенный список.xlsx',path,size:workbook.length,modified:'2026-10-04'}] };
+  let downloads = 0;
+  const original = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (String(url).startsWith('https://downloader.disk.yandex.ru/')) {
+      downloads++; return new Response(workbook, {headers:{'content-length':String(workbook.length)}});
+    }
+    return original(url, options);
+  });
+  const store = {
+    get: async (src,p,role) => entries.get(`${p}:${role}`),
+    put: async (src,p,role,revision,data) => entries.set(`${p}:${role}`,{revision,data}),
+    listFolders: async () => [...folders.values()],
+    putFolder: async (src,folder,statuses) => folders.set(folder.path,{res_path:folder.path,res_name:folder.name,
+      enterprise_path:folder.enterprisePath,enterprise_name:folder.enterpriseName,statuses}),
+    pruneFolders: async () => {},
+  };
+  const service = createPreparedService({source,store,yandex:async url => {
+    const p=url.searchParams.get('path');
+    if (url.pathname.endsWith('/download')) return Response.json({href:'https://downloader.disk.yandex.ru/workbook'});
+    if (p === path) return Response.json({type:'file',name:'Расширенный список.xlsx',size:workbook.length,modified:'2026-10-04'});
+    return Response.json({type:'dir',_embedded:{items:tree[p] || [],total:(tree[p] || []).length}});
+  }});
+  await service.syncAll({prepare:false});
+  assert.equal(downloads,0);
+  assert.equal(folders.get('/ЭС/РЭС').statuses.registry.state,'pending');
+  assert.equal(await service.prepareNext(),true);
+  assert.equal(downloads,1);
+  assert.equal(folders.get('/ЭС/РЭС').statuses.registry.state,'ready');
+  assert.equal(await service.prepareNext(),false);
+});
+
+test('a manually chosen snapshot refreshes before returning its old ETag', async t => {
+  const workbook = monthly(), path = '/ЭС/РЭС/Мой файл.xlsx', source = 'https://disk.yandex.ru/d/ManualTest';
+  const old = {revision:'old',data:{sheets:[]},updated_at:new Date(Date.now()-20*60*1000)};
+  let saved=old, downloads=0;
+  const original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=> {
+    if (String(url).startsWith('https://downloader.disk.yandex.ru/')) { downloads++; return new Response(workbook,{headers:{'content-length':String(workbook.length)}}); }
+    return original(url,options);
+  });
+  const store={get:async()=>saved,getMeta:async()=>({revision:saved.revision,updated_at:saved.updated_at}),
+    getRevision:async()=>saved.revision,put:async(src,p,role,revision,data)=>{saved={revision,data,updated_at:new Date()};}};
+  const service=createPreparedService({source,store,yandex:async url=>Response.json(url.pathname.endsWith('/download')
+    ? {href:'https://downloader.disk.yandex.ru/manual'} :
+      {type:'file',name:'Мой файл.xlsx',size:workbook.length,modified:'2026-10-04'})});
+  const result=await service.fromDatabase(path,'consumption',`"${Buffer.from(old.revision).toString('base64url')}"`);
+  assert.equal(result.unchanged,undefined);
+  assert.notEqual(result.revision,'old');
+  assert.equal(downloads,1);
 });

@@ -19,6 +19,27 @@ test('static serving, API configuration and rejected arbitrary remote source', a
     assert.equal((await fetch(root,{method:'POST'})).status,405);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+test('API and static errors do not expose the database host or absolute filesystem path', async () => {
+  const previous=process.env.YANDEX_PUBLIC_URL;
+  process.env.YANDEX_PUBLIC_URL='https://disk.yandex.ru/d/ErrorTest';
+  const server=createServer({preparedStore:{listFolders:async()=>{throw new Error('connect ECONNREFUSED 10.20.30.40:5432');},close:async()=>{}}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try {
+    const root=`http://127.0.0.1:${server.address().port}`;
+    const database=await fetch(root+'/api/load-map');
+    assert.equal(database.status,502);
+    assert.doesNotMatch(await database.text(),/10\.20\.30\.40|ECONNREFUSED/);
+    const invalid=await fetch(root+'/%E0%A4%A');
+    assert.equal(invalid.status,400);
+    assert.doesNotMatch(await invalid.text(),/\/workspace|URI malformed/);
+    const nul=await fetch(root+'/index.html%00');
+    assert.equal(nul.status,400);
+    assert.doesNotMatch(await nul.text(),/\/workspace|public\/index/);
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    if(previous===undefined) delete process.env.YANDEX_PUBLIC_URL; else process.env.YANDEX_PUBLIC_URL=previous;
+  }
+});
 test('Amvera environment supplies the shared source; query parameters cannot replace it', async t => {
   const previous = process.env.YANDEX_PUBLIC_URL;
   const clientFetch = globalThis.fetch;

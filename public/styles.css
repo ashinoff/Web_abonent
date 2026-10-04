@@ -303,6 +303,7 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .load-map-status i{width:6px;height:6px;background:currentColor;border-radius:50%}
 .load-map-status[data-state="missing"]{background:#edf1f5;color:#718095}
 .load-map-status[data-state="stale"]{background:#fff1df;color:#99703a}
+.load-map-status[data-state="pending"]{background:#eaf1fb;color:#496e9d}
 .load-map-status[data-state="error"]{background:#fae9e7;color:#aa5e55}
 .load-map-date{display:block;color:#8a98a8;font-size:10px;margin-top:9px}
 .load-map-empty{padding:27px 18px;text-align:center;color:#71849c;background:#f5f8fb;border-radius:12px;font-size:13px;line-height:1.6}

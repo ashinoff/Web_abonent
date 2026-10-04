@@ -32,16 +32,32 @@ export function createPreparedStore(env = process.env) {
       const { rows } = await pool.query('SELECT revision, data, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
       return rows[0] || null;
     },
+    async getJson(source, path, role) {
+      await ready();
+      const { rows } = await pool.query('SELECT revision, data::text AS json, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
+      return rows[0] || null;
+    },
     async getRevision(source, path, role) {
       await ready();
       const { rows } = await pool.query('SELECT revision FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
       return rows[0]?.revision || null;
+    },
+    async getMeta(source, path, role) {
+      await ready();
+      const { rows } = await pool.query('SELECT revision, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
+      return rows[0] || null;
     },
     async put(source, path, role, revision, data) {
       await ready();
       await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data) VALUES ($1,$2,$3,$4,$5)
         ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,updated_at=now()`,
       [source, path, role, revision, data]);
+    },
+    async putRaw(source, path, role, revision, json) {
+      await ready();
+      await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data) VALUES ($1,$2,$3,$4,$5::jsonb)
+        ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,updated_at=now()`,
+      [source, path, role, revision, json]);
     },
     async putFolder(source, folder, statuses) {
       await ready();

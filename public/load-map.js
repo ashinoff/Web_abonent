@@ -1,7 +1,7 @@
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const roles = [['registry','Реестр'],['consumption','ПО'],['incoming','Приём']];
-const states = { ready:'В базе', stale:'Старая версия', missing:'Нет файла', error:'Ошибка' };
+const states = { ready:'В базе', pending:'Ожидает подготовки', stale:'Старая версия', missing:'Нет файла', error:'Ошибка' };
 const date = value => value ? new Date(value).toLocaleString('ru-RU', { dateStyle:'short', timeStyle:'short' }) : '—';
 
 export function initLoadMap(root) {

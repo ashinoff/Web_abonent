@@ -57,7 +57,8 @@ function resetWorker(error = new Error('Операция отменена.')) {
 function rpc(action, payload = {}, transfer = []) {
   return new Promise((resolve, reject) => {
     const w = getWorker(), id = ++requestId;
-    const timer = setTimeout(() => resetWorker(new Error('Чтение реестра заняло слишком много времени. Попробуйте файл меньшего размера.')), 120000);
+    const timer = setTimeout(() => resetWorker(new Error('Чтение реестра заняло слишком много времени. Попробуйте файл меньшего размера.')),
+      action === 'loadPreparedRegistry' ? 300000 : 120000);
     requests.set(id, { resolve, reject, timer });
     w.postMessage({ id, action, payload }, transfer);
   });
@@ -74,7 +75,8 @@ function monthlyRPC(action, payload = {}, transfer = []) {
     monthlyWorker.onerror = () => { resetMonthly(new Error('Не удалось обработать файл потребления. Повторите загрузку.')); consumptionState='error'; renderIndicators(); };
   }
   return new Promise((resolve,reject) => {
-    const id=++monthlyId, timer=setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },120000);
+    const id=++monthlyId, timer=setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },
+      ['loadPreparedMonthly','checkPreparedIncoming'].includes(action) ? 300000 : 120000);
     monthlyRequests.set(id,{resolve,reject,timer}); monthlyWorker.postMessage({id,action,payload},transfer);
   });
 }

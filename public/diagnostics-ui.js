@@ -71,7 +71,10 @@ export function initDiagnosticsUI({ openDialog, showSettings, context }) {
     }
     try {
       const response = await fetch(new URL('./api/diagnostics', location.href), { cache:'no-store', signal:AbortSignal.timeout(15000) });
-      if (!response.ok) throw new Error(response.status === 404 ? 'Сервер ещё не обновлён до версии с диагностикой.' : `Проверка недоступна (HTTP ${response.status}).`);
+      if (!response.ok) {
+        const gateway = response.status === 503 && !response.headers.get('content-type')?.includes('application/json');
+        throw new Error(gateway ? 'Шлюз Amvera ответил 503: само приложение сейчас недоступно. Проверьте статус запуска и журнал приложения.' : response.status === 404 ? 'Сервер ещё не обновлён до версии с диагностикой.' : `Проверка недоступна (HTTP ${response.status}).`);
+      }
       const data = await response.json();
       if (id === requestId && $('#diagnostics-dialog').open) body.innerHTML = diagnosticsHTML(data, context(), kind);
     } catch (error) {

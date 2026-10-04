@@ -140,6 +140,13 @@ export function createServer(options = {}) {
         const role = url.searchParams.get('role') || '';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !['registry','consumption','incoming'].includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
         try {
+          if (req.method === 'HEAD') {
+            const snapshot = await (store.getMeta ? store.getMeta(key, path, role) : store.get(key, path, role));
+            if (!snapshot) { res.writeHead(404, { 'Cache-Control':'no-store' }); res.end(); return; }
+            const revision = Buffer.from(snapshot.revision).toString('base64url');
+            res.writeHead(req.headers['if-none-match'] === `"${revision}"` ? 304 : 200,
+              { 'ETag':`"${revision}"`, 'Cache-Control':'no-store' }); res.end(); return;
+          }
           const result = await prepared.fromDatabase(path, role, req.headers['if-none-match']);
           if (res.destroyed) return;
           const revision = Buffer.from(result.revision).toString('base64url');
@@ -176,7 +183,11 @@ export function createServer(options = {}) {
           for (let redirect = 0; redirect < 4; redirect++) {
             if (!validDownloadUrl(download)) throw new Error('Яндекс Диск вернул неподдерживаемый адрес скачивания.');
             response = await fetch(download, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90000)]), redirect: 'manual' });
-            if (response.status >= 300 && response.status < 400) { download = new URL(response.headers.get('location'), download).href; await response.body?.cancel(); continue; }
+            if (response.status >= 300 && response.status < 400) {
+              const location = response.headers.get('location');
+              if (!location) throw new Error('Адрес перенаправления отсутствует.');
+              download = new URL(location, download).href; await response.body?.cancel(); continue;
+            }
             break;
           }
           if (!response?.ok) { await response?.body?.cancel(); throw new Error('Не удалось скачать реестр с Яндекс Диска.'); }
@@ -201,7 +212,10 @@ export function createServer(options = {}) {
     } catch (error) {
       if (res.destroyed) return;
       if (res.headersSent) { res.destroy(); return; }
-      sendJson(res, error.code === 'ENOENT' ? 404 : error.status || 502, { error: error.code === 'ENOENT' ? 'Страница не найдена.' : error.message || 'Сервис временно недоступен.' });
+      if (error instanceof URIError || error.code === 'ERR_INVALID_ARG_VALUE') { sendJson(res, 400, { error: 'Некорректный адрес.' }); return; }
+      if (error.code === 'ENOENT') { sendJson(res, 404, { error: 'Страница не найдена.' }); return; }
+      if (!error.status) console.warn('Ошибка запроса:', error.message);
+      sendJson(res, error.status || 502, { error: error.status ? error.message : 'Сервис временно недоступен.' });
     }
   });
   server.preparedService = prepared;
@@ -226,17 +240,22 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } catch (error) { connected = false; server.setDatabaseStatus(false); console.error('DB error:', error.message); }
     return false;
   };
+  server.listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}`));
+  // Serve the shell and diagnostics even while PostgreSQL is slow or unavailable.
   if (server.preparedStore) await checkDb();
   else console.error('DB error: задайте DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASSWORD.');
-  server.listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}`));
   if (server.preparedStore && server.preparedService) {
     const sync = async () => {
       if (!await checkDb()) return;
       server.setSyncStatus({ state: 'running', checkedAt: new Date().toISOString(), issue: null });
-      try { await server.preparedService.syncAll(); server.setSyncStatus({ state: 'ready', checkedAt: new Date().toISOString(), issue: null }); }
+      try { await server.preparedService.syncAll({ prepare: false }); server.setSyncStatus({ state: 'ready', checkedAt: new Date().toISOString(), issue: null }); }
       catch (error) { server.setSyncStatus({ state: 'error', checkedAt: new Date().toISOString(), issue: sourceIssue(error) }); console.warn('Обновление данных:', error.message); }
     };
+    // Catalog scan is cheap; prepare one workbook per tick in a separate,
+    // memory-limited process so a large RES cannot restart the HTTP server.
+    const prepareNext = () => server.preparedService.prepareNext().catch(error => console.warn('Фоновая подготовка:', error.message));
     setTimeout(sync, 5000).unref();
+    setInterval(prepareNext, 20000).unref();
     setInterval(sync, 15 * 60 * 1000).unref();
   }
 }
