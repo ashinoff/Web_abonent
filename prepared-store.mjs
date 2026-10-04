@@ -69,6 +69,13 @@ export function createPreparedStore(env = process.env) {
         statuses=EXCLUDED.statuses,checked_at=now()`,
       [source, folder.path, folder.enterprisePath, folder.enterpriseName, folder.name, statuses]);
     },
+    async markFile(source, path, role, state, updatedAt) {
+      await ready();
+      await pool.query(`UPDATE abonent_folder_status
+        SET statuses=jsonb_set(statuses, ARRAY[$3], (statuses -> $3) || $4::jsonb), checked_at=now()
+        WHERE source=$1 AND statuses -> $3 ->> 'path'=$2`,
+      [source, path, role, JSON.stringify({ state, updatedAt })]);
+    },
     async listFolders(source) {
       await ready();
       const { rows } = await pool.query(`SELECT enterprise_path,enterprise_name,res_path,res_name,statuses,checked_at

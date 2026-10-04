@@ -251,11 +251,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       try { await server.preparedService.syncAll({ prepare: false }); server.setSyncStatus({ state: 'ready', checkedAt: new Date().toISOString(), issue: null }); }
       catch (error) { server.setSyncStatus({ state: 'error', checkedAt: new Date().toISOString(), issue: sourceIssue(error) }); console.warn('Обновление данных:', error.message); }
     };
-    // Catalog scan is cheap; prepare one workbook per tick in a separate,
-    // memory-limited process so a large RES cannot restart the HTTP server.
-    const prepareNext = () => server.preparedService.prepareNext().catch(error => console.warn('Фоновая подготовка:', error.message));
+    // Only catalog metadata runs unattended on the 512 MB plan. A selected
+    // workbook is prepared on demand in the bounded child process.
     setTimeout(sync, 5000).unref();
-    setInterval(prepareNext, 20000).unref();
     setInterval(sync, 15 * 60 * 1000).unref();
   }
 }

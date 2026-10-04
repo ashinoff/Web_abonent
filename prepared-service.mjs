@@ -1,11 +1,13 @@
 import { gzip } from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readBoundedBuffer } from './public/download-buffer.js';
 import { findSource } from './public/source.js';
 
 const maxBytes = 40 * 1048576;
@@ -26,7 +28,7 @@ export function createPreparedService({ source, store, yandex }) {
   function target(path, suffix = '') {
     const url = new URL(api + suffix); url.searchParams.set('public_key', source); url.searchParams.set('path', path); return url;
   }
-  async function download(path, size) {
+  async function download(path, size, destination) {
     const { href } = await (await yandex(target(path, '/download'))).json();
     let address = href;
     for (let i = 0; i < 4; i++) {
@@ -38,20 +40,28 @@ export function createPreparedService({ source, store, yandex }) {
         address = new URL(location, address).href; await response.body?.cancel(); continue;
       }
       if (!response.ok) throw new Error('Не удалось скачать Excel с Яндекс Диска.');
-      return readBoundedBuffer(response, maxBytes, size);
+      if (size > maxBytes || Number(response.headers.get('content-length')) > maxBytes)
+        throw new Error('Размер Excel превышает 40 МБ.');
+      let bytes = 0;
+      const limiter = new Transform({ transform(chunk, _, callback) {
+        bytes += chunk.length;
+        callback(bytes > maxBytes ? new Error('Размер Excel превышает 40 МБ.') : null, chunk);
+      } });
+      await pipeline(Readable.fromWeb(response.body), limiter, createWriteStream(destination));
+      return;
     }
     throw new Error('Слишком много перенаправлений при скачивании.');
   }
-  async function prepare(buffer, role, filename) {
-    const directory = await mkdtemp(join(tmpdir(), 'abonent-prepare-'));
+  async function prepare(directory, role, filename) {
     try {
       const path = join(directory, 'workbook');
-      await writeFile(path, Buffer.from(buffer));
-      const { stdout } = await runChild(process.execPath,
-        ['--max-old-space-size=160', childPath, path, role, filename],
-        { maxBuffer: 64 * 1048576, timeout: 120000,
+      const output = join(directory, 'package.json');
+      await runChild(process.execPath,
+        ['--max-old-space-size=128', childPath, path, output, role, filename],
+        { maxBuffer: 4096, timeout: 120000,
           env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
-      return stdout;
+      if ((await stat(output)).size > 64 * 1048576) throw new Error('Пакет Excel превышает лимит 64 МБ.');
+      return readFile(output, 'utf8');
     } catch (error) {
       if (error.signal || /heap out of memory|allocation failed/i.test(error.stderr || ''))
         throw new Error('Файл превышает доступный лимит памяти подготовки Excel.');
@@ -69,16 +79,30 @@ export function createPreparedService({ source, store, yandex }) {
         catch (error) { if (previous) return { ...previous, stale: true }; throw error; }
         if (meta.type !== 'file' || !/\.xlsx?$/i.test(meta.name || '') || !Number.isFinite(meta.size) || meta.size > maxBytes) throw new Error('Файл Excel недоступен или превышает 40 МБ.');
         const revision = revisionOf(meta);
-        if (previous?.revision === revision) return previous;
+        if (previous?.revision === revision) {
+          await store.markFile?.(source, path, role, 'ready', previous.updated_at);
+          return previous;
+        }
         // A single Excel parse at a time prevents 2–5 concurrent visitors from
         // multiplying peak memory during a cache miss.
         const task = async () => {
           const current = await readMeta(path, role);
-          if (current?.revision === revision) return current;
-          const buffer = await download(path, meta.size);
-          const json = await prepare(buffer, role, meta.name);
+          if (current?.revision === revision) {
+            await store.markFile?.(source, path, role, 'ready', current.updated_at);
+            return current;
+          }
+          const directory = await mkdtemp(join(tmpdir(), 'abonent-prepare-'));
+          let json;
+          try {
+            await download(path, meta.size, join(directory, 'workbook'));
+            json = await prepare(directory, role, meta.name);
+          } catch (error) {
+            await rm(directory, { recursive: true, force: true });
+            throw error;
+          }
           if (store.putRaw) await store.putRaw(source, path, role, revision, json);
           else await store.put(source, path, role, revision, JSON.parse(json));
+          await store.markFile?.(source, path, role, 'ready', new Date());
           return { revision, updated_at: new Date() };
         };
         const next = queue.then(task); queue = next.catch(() => {});
