@@ -11,25 +11,25 @@ import { createPreparedService, preparationLimits } from '../prepared-service.mj
 import { createPreparedStore } from '../prepared-store.mjs';
 import { createServer } from '../server.mjs';
 
-const excel = rows => {
+const excel = (rows, bookType = 'xlsx') => {
   const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'Лист1');
-  return XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
+  return XLSX.write(book, { type: 'buffer', bookType });
 };
-const registry = () => excel([
+const registry = bookType => excel([
   ['Номер счетчика','ЛС','Наименование договора','ТУ','ТП','Адрес','Примечание'],
   ['001','0001','ООО Тест','Объект 1','ТП-1','Сочи, улица Тестовая, 1','Проверить ввод'],
   ['002','0001','ООО Тест','Объект 1','ТП-1','Сочи, улица Тестовая, 1','Проверить ввод'],
-]);
-const monthly = () => excel([
+], bookType);
+const monthly = bookType => excel([
   ['Полезный отпуск по всем точкам учета за Январь 2022 г. - Февраль 2022 г.'],
   ['ЛС/Номер договора','ТУ','ТП','Январь 2022','Февраль 2022'],
   ['0001','Объект 1','ТП-1',10,20],
   ['0001','Объект 1','ТП-1',10,30],
-]);
+], bookType);
 
-test('server packages preserve all registry cells, notifications and additive monthly analysis', () => {
-  const rawRegistry = registry(), rawMonthly = monthly();
-  const packedRegistry = prepareWorkbook(rawRegistry, 'registry', 'Расширенный список.xlsx');
+for (const bookType of ['biff8', 'xlsx']) test(`${bookType}: server packages preserve all registry cells, notifications and additive monthly analysis`, () => {
+  const rawRegistry = registry(bookType), rawMonthly = monthly(bookType);
+  const packedRegistry = prepareWorkbook(rawRegistry, 'registry', `Расширенный список.${bookType === 'biff8' ? 'xls' : 'xlsx'}`);
   const sheets = unpackRegistry(JSON.parse(gunzipSync(gzipSync(JSON.stringify(packedRegistry)))));
   const index = buildIndex(sheets);
   assert.equal(index.records.length, 2);

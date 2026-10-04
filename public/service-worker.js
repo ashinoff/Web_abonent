@@ -1,4 +1,4 @@
-const version = 'abonent-shell-2026-10-04-v5';
+const version = 'abonent-shell-2026-10-04-v6';
 const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./worker.js',
   './core.js','./monthly.js','./analysis-service.js','./analysis-engine.js','./analysis-settings.js',
   './analysis-tuning.js','./analysis-ui.js','./analysis-help.js','./diagnostics-ui.js','./analysis-chart.js','./chart-years.js','./demo.js',
