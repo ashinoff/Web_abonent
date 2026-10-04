@@ -12,7 +12,7 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=9';
+import { listOfflineCopies } from './prepared-cache.js?v=10';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -46,7 +46,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=9', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=10', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
@@ -882,7 +882,11 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     $('#record-body').scrollTop = 0;
   } catch (error) { message('#form-message', error.message); }
 }
-const notesUI = initNotesUI({ request: rpc, openDialog, openRecord });
+const notesUI = initNotesUI({ request: rpc, openDialog, openRecord, mapContext:() => ({
+  scope:JSON.stringify([currentSource?.type,rootUrl(),selectedRes?.path || currentSource?.res || '',currentSource?.fileInfo?.path || currentSource?.name || '']),
+  provider:config.maps?.geocoder || 'photon.komoot.io',
+  endpoint:proxy ? new URL('./api/map-geocode',location.href).href : null,
+}) });
 const loadMap = initLoadMap(rootUrl, {
   getFiles(folder) {
     const files = folderSources(folder);

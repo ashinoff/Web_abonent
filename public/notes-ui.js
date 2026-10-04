@@ -1,10 +1,22 @@
+import { initNotesMapUI } from './notes-map-ui.js';
+
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const number = n => new Intl.NumberFormat('ru-RU').format(n);
 
-export function initNotesUI({ request, openDialog, openRecord }) {
+export function initNotesUI({ request, openDialog, openRecord, mapContext }) {
   const $ = selector => document.querySelector(selector);
   const dialog = $('#notes-dialog'), list = $('#notes-list'), filter = $('#notes-filter'), more = $('#notes-more');
-  let summary = null, rows = [], version = 0, timer, loading = false;
+  let summary = null, rows = [], version = 0, timer, loading = false, mode = 'list';
+  const mapUI = initNotesMapUI({ request,openRecord,context:mapContext,onMeta:text => { $('#notes-meta').textContent = text; } });
+  function switchMode(next) {
+    if (!summary) return;
+    version++; clearTimeout(timer); loading = false; mode = next;
+    $('#notes-list-mode').setAttribute('aria-pressed',String(mode === 'list'));
+    $('#notes-map-mode').setAttribute('aria-pressed',String(mode === 'map'));
+    list.hidden = mode !== 'list'; more.hidden = true; $('#notes-message').hidden = true;
+    if (mode === 'map') { $('#notes-body').scrollTop = 0; mapUI.show(filter.value.trim()); }
+    else { mapUI.hide(); load(); }
+  }
 
   function update(data, busy = false) {
     summary = data;
@@ -16,13 +28,13 @@ export function initNotesUI({ request, openDialog, openRecord }) {
   }
   function reset() {
     version++; clearTimeout(timer); loading = false; rows = []; summary = null;
-    dialog.close(); list.replaceChildren(); filter.value = ''; update(null);
+    mapUI.reset(); mode = 'list'; dialog.close(); list.replaceChildren(); filter.value = ''; update(null);
   }
   function render() {
     list.innerHTML = rows.map((r, i) => `<button type="button" class="meter-item note-item" data-note="${i}"><span class="meter-item-head"><span class="meter-number"><span class="number-label">Номер ПУ</span><strong>${esc(r.fields.meter || '—')}</strong></span><span class="meter-open-label">Открыть</span></span><span class="meter-details"><span><span class="number-label">Лицевой счёт</span><strong>${esc(r.fields.account || '—')}</strong></span><span><span class="number-label">Точка учёта</span><strong>${esc([r.fields.point || r.fields.pointNumber, r.fields.pointName].filter(Boolean).join(' · ') || '—')}</strong></span></span><span class="meter-subscriber">${esc(r.fields.name || 'Абонент')}</span><span class="note-location">${esc([r.fields.tp, r.address].filter(Boolean).join(' · '))}</span><span class="note-text"><span class="number-label">Примечание</span><span>${esc(r.note)}</span></span><span class="note-source">${esc(r.sheet)} · строка ${r.row}</span></button>`).join('');
   }
   async function load(append = false) {
-    if (!summary || append && loading) return;
+    if (!summary || mode !== 'list' || append && loading) return;
     clearTimeout(timer);
     const current = ++version; loading = true; more.disabled = true;
     $('#notes-message').hidden = true;
@@ -42,14 +54,16 @@ export function initNotesUI({ request, openDialog, openRecord }) {
   }
   $('#notes-open').addEventListener('click', () => {
     if (!summary) return;
-    filter.value = ''; openDialog('notes-dialog'); load();
+    filter.value = ''; openDialog('notes-dialog'); switchMode(mode);
   });
-  filter.addEventListener('input', () => { version++; clearTimeout(timer); more.disabled = true; timer = setTimeout(() => load(), 160); });
+  filter.addEventListener('input', () => { version++; clearTimeout(timer); if (mode === 'map') { mapUI.filter(filter.value.trim()); return; } more.disabled = true; timer = setTimeout(() => load(), 160); });
+  $('#notes-list-mode').addEventListener('click',() => switchMode('list'));
+  $('#notes-map-mode').addEventListener('click',() => switchMode('map'));
   more.addEventListener('click', () => load(true));
   list.addEventListener('click', e => {
     const button = e.target.closest('[data-note]');
     if (button) openRecord(rows[Number(button.dataset.note)].id, { parent: 'notes-dialog', variants: [] });
   });
-  dialog.addEventListener('close', () => { version++; clearTimeout(timer); loading = false; });
+  dialog.addEventListener('close', () => { version++; clearTimeout(timer); loading = false; mapUI.hide(); });
   return { update, reset };
 }

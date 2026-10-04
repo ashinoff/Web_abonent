@@ -1,10 +1,10 @@
-const version = 'abonent-shell-2026-10-04-v9';
+const version = 'abonent-shell-2026-10-05-v10';
 const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./worker.js',
   './core.js','./monthly.js','./analysis-service.js','./analysis-engine.js','./analysis-settings.js',
   './analysis-tuning.js','./analysis-ui.js','./analysis-help.js','./diagnostics-ui.js','./analysis-chart.js','./chart-years.js','./demo.js',
-  './download-buffer.js','./gestures.js','./notes-ui.js','./readings.js','./record-sections.js',
+  './download-buffer.js','./gestures.js','./notes-ui.js','./notes-map-ui.js','./notes-map-data.js','./readings.js','./record-sections.js',
   './source-files.js','./source.js','./workbook-check.js','./prepared-data.js','./prepared-cache.js','./load-map.js','./load-session.js','./offline-copies.js',
-  './vendor/xlsx.full.min.js','./favicon.svg','./rosseti-logo.svg'];
+  './vendor/xlsx.full.min.js','./vendor/leaflet/leaflet.js','./vendor/leaflet/leaflet.css','./favicon.svg','./rosseti-logo.svg'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(version).then(cache => cache.addAll(shell.map(url => new Request(new URL(url, self.location.href), { cache:'reload' })))).then(() => self.skipWaiting()));
 });

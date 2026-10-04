@@ -11,6 +11,7 @@ const aliases = {
   model: ['вид счетчика', 'тип счетчика', 'модель счетчика', 'тип пу'],
   receipt: ['показания с квитанции показания', 'показания с квитанции'],
   note: ['примечание', 'примечания'],
+  latitude: ['широта', 'latitude'], longitude: ['долгота', 'longitude'],
   transformerRatio: ['коэффициент трансформации', 'коэфициент трансформации', 'коэф. трансформации', 'коэф трансформации', 'коэффициент трансформации тт', 'коэф тт', 'коэф. тт', 'прибор учета коэффициент трансформации', 'прибор учета коэфициент трансформации'],
   station: ['подстанция', 'пс'], feeder: ['фидер10', 'фидер 10', 'фидер'], tp: ['тп'],
   power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер точки учета', 'код точки учета'],
@@ -152,6 +153,10 @@ export function listNotes(index, { query = '', offset = 0, limit = 100 } = {}) {
   const q = norm(query);
   const found = index.notes.filter(r => !q || norm([r.note, r.fields.meter, r.fields.account, r.fields.name, r.fields.tp, r.fields.point, r.fields.pointNumber, r.fields.pointName, r.address].filter(Boolean).join(' ')).includes(q));
   return { total: found.length, totalInRegistry: index.notes.length, notes: found.slice(offset, offset + Math.min(limit, 200)) };
+}
+export function listMapNotes(index) {
+  const fields = ['meter','account','name','tp','point','pointNumber','pointName','locality','street','house','building','latitude','longitude'];
+  return index.notes.map(note => ({ ...note, fields:Object.fromEntries(fields.filter(key => note.fields[key]).map(key => [key,note.fields[key]])) }));
 }
 // Only these fields are needed to relate consumption to registry points.
 export function analysisRecords(records) {

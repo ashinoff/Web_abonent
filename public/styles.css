@@ -402,3 +402,28 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .offline-message[data-kind="error"]{color:#a95c51}
 .offline-message[data-kind="success"]{color:#42795a}
 @media(max-width:360px){.source-indicators{gap:8px}.selection-actions .secondary{padding:8px 10px}.load-map-res-title{align-items:flex-start}.load-map-res-title small{white-space:normal;text-align:right}.offline-actions{gap:6px}.offline-action{padding:8px 10px}}
+/* Notification map stays inside the current RES and leaves the header usable. */
+.notes-view-switch{display:flex;gap:4px;padding:4px;margin:0 26px 14px;background:#edf2f8;border:1px solid #dce5ef;border-radius:12px;flex-shrink:0}
+.notes-view-switch button{display:flex;align-items:center;justify-content:center;gap:7px;flex:1;min-height:40px;border-radius:8px;background:transparent;color:#5c7591;font-size:14px;font-weight:600}
+.notes-view-switch button[aria-pressed=true]{background:#fff;color:#174777;box-shadow:0 2px 6px #193f6210}
+.notes-view-switch svg,.notes-map-toolbar svg{width:18px;height:18px}
+.notes-map-toolbar{display:flex;gap:9px;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px}
+.notes-map-toolbar button{min-height:42px;padding:10px 13px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.map-disclosure{font-size:12px;line-height:1.5;color:#6c8096;margin:8px 0 12px}
+.notes-map-status{font-size:13px;line-height:1.5;background:#fff5e8;border:1px solid #f0dfc5;border-radius:10px;padding:10px 12px;margin:10px 0;color:#785629}
+.notes-map-canvas{height:clamp(280px,48dvh,520px);min-height:280px;border:1px solid #d4e0ea;border-radius:14px;isolation:isolate;background:#e9eef1;font-family:inherit;z-index:0}
+.notes-map-canvas.placing,.notes-map-canvas.placing .leaflet-interactive{cursor:crosshair}
+.notes-map-canvas .leaflet-control-attribution{font-size:10px;line-height:16px}
+.notification-map-marker{border:2px solid white;border-radius:50% 50% 50% 3px;background:#ed861d;box-shadow:0 2px 8px #112c4e55;transform-origin:center}
+.notification-map-marker span{display:grid;place-items:center;width:30px;height:30px;color:#fff;font-weight:750;font-size:14px;font-family:inherit}
+.map-popup{font-family:inherit;color:#223e59;min-width:190px}
+.map-popup-address{display:block;text-align:left;width:100%;font-size:13px;font-weight:650;line-height:1.5;color:#174777;background:none;padding:3px 0 8px;white-space:normal}
+.map-note-card{display:grid;gap:5px;text-align:left;width:100%;background:#fff;padding:12px;border:1px solid #dce5ef;border-radius:10px;margin:8px 0;line-height:1.5;color:#344f6b;white-space:normal;overflow-wrap:anywhere}
+.map-note-name{font-size:13px;font-weight:650}.map-note-ids{font-size:11px;color:#6b8095}.map-note-text{font-size:13px;white-space:pre-wrap}.map-note-open{font-size:12px;color:#235b92;font-weight:600}
+.notes-map-detail,.map-unplaced{padding:16px;margin-top:16px;background:#fff;border:1px solid #dce5ef;border-radius:13px}
+.notes-map-detail h3,.map-unplaced h3{margin:0 0 10px;font-size:15px;line-height:1.5;color:#264c74;overflow-wrap:anywhere}
+.map-candidate,.map-unplaced-address{display:grid;gap:4px;padding:11px 12px;margin:7px 0;width:100%;border:1px solid #dce5ef;border-radius:9px;text-align:left;background:#f7faff;color:#2b5278;font-size:13px;line-height:1.5;white-space:normal}
+.map-unplaced-address span{font-size:11px;color:#75859a}.map-place{width:100%;min-height:42px;margin-top:8px;font-size:13px}
+.map-placement-actions{display:flex;gap:8px;margin-top:10px}.map-placement-actions button{min-height:42px;font-size:13px;padding:9px 13px}
+.map-internet-hint{font-size:12px;margin-bottom:0}
+@media(max-width:600px){.notes-view-switch{margin:0 20px 12px}.notes-map-canvas{height:42dvh;min-height:280px}#notes-map-panel .notes-map-toolbar{gap:6px}#notes-map-panel .map-disclosure{font-size:11px}}

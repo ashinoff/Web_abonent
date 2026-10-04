@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { createPreparedStore } from './prepared-store.mjs';
 import { createPreparedService } from './prepared-service.mjs';
+import { createMapGeocoder } from './map-geocoder.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -88,18 +89,38 @@ export function createServer(options = {}) {
   }
   const store = options.preparedStore || createPreparedStore();
   const prepared = store && createPreparedService({ source: key, store, yandex });
+  const geocoder = options.mapGeocoder || createMapGeocoder();
   let databaseConnected = Boolean(store && !store.ready);
   let syncStatus = { state: 'waiting', checkedAt: null, issue: null };
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.yandex.net https://*.yandex.ru https://*.yandex.com https://*.yandexdisk.com; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self' https://*.yandex.net https://*.yandex.ru https://*.yandex.com https://*.yandexdisk.com; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     if (!authorized(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Abonent", charset="UTF-8"' }); res.end('Требуется вход'); return; }
-    if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: 'Метод не поддерживается.' }); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected }); return; }
+      if (url.pathname === '/api/map-geocode' && req.method === 'POST') {
+        if (!String(req.headers['content-type'] || '').startsWith('application/json')) { sendJson(res,415,{ error:'Требуется JSON.' }); return; }
+        // The browser sends only the house address, never a record or note.
+        const chunks = []; let length = 0;
+        for await (const chunk of req) {
+          length += chunk.length;
+          if (length > 2048) { sendJson(res,413,{ error:'Адрес слишком длинный.' }); return; }
+          chunks.push(chunk);
+        }
+        let data;
+        try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { sendJson(res,400,{ error:'Некорректный запрос.' }); return; }
+        if (!data || Object.keys(data).some(key => key !== 'address')) { sendJson(res,400,{ error:'Передайте только адрес дома.' }); return; }
+        const controller = new AbortController();
+        const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        res.on('close',disconnected);
+        try { sendJson(res,200,{ candidates:await geocoder.lookup(data.address,{ signal:controller.signal }) }); }
+        finally { res.off('close',disconnected); }
+        return;
+      }
+      if (!['GET','HEAD'].includes(req.method)) { sendJson(res,405,{ error:'Метод не поддерживается.' }); return; }
+      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected, maps:{ geocoder:geocoder.hostname } }); return; }
       if (url.pathname === '/api/diagnostics') {
         let database = { state: 'not_configured', issue: 'not_configured' }, catalog = { state: 'unavailable' };
         if (store) {

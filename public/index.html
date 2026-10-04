@@ -7,9 +7,10 @@
   <meta name="description" content="Поиск абонентов электросетей по номеру прибора учёта, лицевому счёту и адресу.">
   <title>РОССЕТИ — Кубаньэнерго · Реестр абонентов</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-  <link rel="stylesheet" href="./styles.css?v=9">
+  <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="./styles.css?v=10">
   <script src="./config.js"></script>
-  <script type="module" src="./app.js?v=9"></script>
+  <script type="module" src="./app.js?v=10"></script>
 </head>
 <body>
   <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -118,7 +119,20 @@
   </dialog>
   <dialog id="notes-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="notes-title">
     <div class="dialog-header tp-header"><div class="tp-header-top"><div class="tp-header-copy"><h2 id="notes-title">Примечания</h2><p class="registry-meta" id="notes-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть примечания"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><label class="sr-only" for="notes-filter">Найти потребителя или примечание</label><div class="search-input-wrap tp-filter-wrap"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="notes-filter" type="search" placeholder="ПУ, ЛС, ТУ или примечание" autocomplete="off" maxlength="200"></div></div>
-    <div class="dialog-body" id="notes-body"><div class="meter-list" id="notes-list"></div><button type="button" class="secondary show-more" id="notes-more" hidden>Показать ещё</button><p class="form-message" id="notes-message" role="status" hidden></p></div>
+    <div class="notes-view-switch" role="group" aria-label="Вид уведомлений"><button type="button" id="notes-list-mode" aria-pressed="true">Список</button><button type="button" id="notes-map-mode" aria-pressed="false"><svg aria-hidden="true"><use href="#i-pin"/></svg>Карта</button></div>
+    <div class="dialog-body" id="notes-body"><div class="meter-list" id="notes-list"></div><button type="button" class="secondary show-more" id="notes-more" hidden>Показать ещё</button><p class="form-message" id="notes-message" role="status" hidden></p>
+      <section id="notes-map-panel" hidden aria-label="Уведомления на карте">
+        <div class="notes-map-toolbar" data-no-swipe><button type="button" class="primary" id="notes-map-find" disabled>Найти адреса</button><button type="button" class="secondary" id="notes-map-stop" hidden>Остановить</button><button type="button" class="secondary" id="notes-map-fit" aria-label="Показать все отметки на карте"><svg aria-hidden="true"><use href="#i-pin"/></svg>Все отметки</button></div>
+        <p class="map-disclosure" id="notes-map-disclosure">«Найти адреса» передаст адреса домов сервису <span id="notes-map-provider">photon.komoot.io</span>. ФИО, квартиры, номера и текст уведомлений остаются на устройстве. Координаты сохраняются на этом телефоне.</p>
+        <p class="notes-map-status" id="notes-map-status" role="status" hidden></p>
+        <div id="notes-map-canvas" class="notes-map-canvas" data-no-swipe aria-label="Карта адресов уведомлений"></div>
+        <div class="map-placement-actions" data-no-swipe><button type="button" class="primary" id="notes-map-save" hidden>Сохранить место</button><button type="button" class="secondary" id="notes-map-cancel" hidden>Отмена</button></div>
+        <p class="hint" id="notes-map-empty" hidden>Уведомлений по этому запросу нет.</p>
+        <div class="notes-map-detail" id="notes-map-detail" data-no-swipe hidden></div>
+        <section class="map-unplaced" id="notes-map-unplaced" hidden><h3 id="notes-map-unplaced-title"></h3><div id="notes-map-unplaced-list" data-no-swipe></div></section>
+        <p class="hint map-internet-hint">Для новой подложки карты нужна связь. Сохранённые отметки и уведомления доступны без интернета.</p>
+      </section>
+    </div>
     <button type="button" class="scroll-top" data-scroll-top aria-label="Наверх примечаний" hidden><svg aria-hidden="true"><use href="#i-up"/></svg></button>
   </dialog>
   <dialog id="search-results-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="search-modal-title">
