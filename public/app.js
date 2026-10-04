@@ -9,6 +9,7 @@ import { initAnalysisUI } from './analysis-ui.js';
 import { initNotesUI } from './notes-ui.js';
 import { calculateReading } from './readings.js';
 import { initLoadMap } from './load-map.js';
+import { initDiagnosticsUI } from './diagnostics-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -116,7 +117,7 @@ function renderIndicators() {
       'Подготовка офлайн-доступа: дождитесь загрузки реестра, ПО и приёма при устойчивой связи.';
   }
   const cachedOffline = summary?.offline || consumptionInfo?.offline || incomingInfo?.offline;
-  const baseState = sourceState === 'loading' ? 'checking' : !config.prepared ? 'idle' : !navigator.onLine || cachedOffline ? 'off' : config.databaseConnected || summary?.cached ? 'on' : 'off';
+  const baseState = sourceState === 'loading' ? 'checking' : !config.prepared ? (proxy ? 'off' : 'idle') : !navigator.onLine || cachedOffline ? 'off' : config.databaseConnected ? 'on' : 'off';
   const baseText = baseState === 'checking' ? 'Проверяем подключение к базе…' : !config.prepared ? 'База не подключена · доступен прежний режим Excel' : baseState === 'on' ? 'Подготовленные данные базы доступны' : !navigator.onLine || cachedOffline ? 'База недоступна · открыты сохранённые данные' : 'Нет связи с базой данных';
   const registryText = registryState === 'ready' || summary ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : pending ? 'Подтвердите столбцы в настройках' : registryError || (registryState === 'missing' ? 'Файл реестра не найден' : registryState === 'error' ? 'Реестр не загружен' : 'Сначала выберите РЭС');
   const consumptionText = consumptionState === 'ready' ? 'Готов к анализу: ' + (consumptionFile?.name || 'Демонстрация') : consumptionState === 'checking' ? `Читаем «${consumptionFile?.name || CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
@@ -702,6 +703,10 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
 }
 const notesUI = initNotesUI({ request: rpc, openDialog, openRecord });
 const loadMap = initLoadMap(rootUrl);
+const diagnosticsUI = initDiagnosticsUI({ openDialog, showSettings, context: () => ({
+  sourceState, registryState, registryError, filesState, filesError, selectedRes: selectedRes?.name,
+  selectedFile: selectedFile?.name, pending: Boolean(pending), offline: !navigator.onLine, serverMode: proxy,
+}) });
 const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings, onMapOpen: loadMap.refresh });
 $('#record-body').addEventListener('click', e => { if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName }); });
 $('#contour-open').addEventListener('click', analysisUI.openTPs);
@@ -717,7 +722,13 @@ function applyReading(box) {
 document.addEventListener('click',e=>{const button=e.target.closest('[data-reading-action]');if(button)applyReading(button.closest('.reading-calculator'));});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.reading-calculator')){e.preventDefault();applyReading(e.target.closest('.reading-calculator'));}});
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises); $('#res-button').addEventListener('click', showRes);
-document.addEventListener('click', e => { if (e.target.closest('[data-open-settings]')) showSettings(); if (e.target.closest('[data-open-enterprises]')) showEnterprises(); if (e.target.closest('[data-open-res]')) showRes(); });
+document.addEventListener('click', e => {
+  const indicator = e.target.closest('#base-indicator, #registry-indicator');
+  if (indicator?.dataset.state === 'off') { diagnosticsUI.open(indicator.id === 'base-indicator' ? 'base' : 'registry'); return; }
+  if (e.target.closest('[data-open-settings]')) showSettings();
+  if (e.target.closest('[data-open-enterprises]')) showEnterprises();
+  if (e.target.closest('[data-open-res]')) showRes();
+});
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => dialogControls.get(button.closest('dialog').id).dismiss()));
 document.querySelectorAll('dialog').forEach(dialog => {
   const controls = attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.id === 'analysis-dialog' ? analysisUI.back() : dialog.id === 'tp-dialog' ? showTPPicker() : dialog.close(), canGoBack: () => dialog.id === 'analysis-dialog' ? analysisUI.canGoBack() : dialog.id === 'tp-dialog' ? Boolean(tpViewKey) : dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open), prepareBack: dialog.id === 'tp-dialog' ? prepareTPReturn : null });

@@ -19,6 +19,24 @@ export function validPublicUrl(value) {
 export function validDownloadUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru', 'yandex.net', 'yandex.com', 'yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith(`.${h}`)); } catch { return false; }
 }
+function databaseIssue(error) {
+  if (!error) return 'unavailable';
+  if (/^Отсутствуют переменные:/.test(error.message)) return 'incomplete_config';
+  if (/^DB_PORT/.test(error.message)) return 'invalid_port';
+  if (error.code === '28P01' || error.code === '28000') return 'authentication';
+  if (error.code === '3D000') return 'database_missing';
+  if (error.code === '42501') return 'permission';
+  if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') return 'host';
+  if (['ECONNREFUSED','ETIMEDOUT','ENETUNREACH'].includes(error.code)) return 'network';
+  if (error.code === '53300') return 'connection_limit';
+  return 'unavailable';
+}
+function sourceIssue(error) {
+  if (error?.upstreamStatus === 404) return 'not_found';
+  if (error?.upstreamStatus === 403) return 'access_denied';
+  if (error?.upstreamStatus === 429) return 'rate_limited';
+  return 'unavailable';
+}
 function preparedDirectory(folders, path, offset) {
   let items;
   if (path === '/') items = [...new Map(folders.map(f => [f.enterprise_path,
@@ -42,7 +60,7 @@ async function yandex(url) {
   const response = await fetch(url, { signal: AbortSignal.timeout(25000), redirect: 'error' });
   if (!response.ok) {
     const messages = { 404: 'Папка или файл не найдены. Проверьте публичную ссылку.', 403: 'Яндекс Диск запретил скачивание. Проверьте доступ по ссылке.', 429: 'Яндекс Диск временно ограничил запросы. Повторите чуть позже.' };
-    throw Object.assign(new Error(messages[response.status] || 'Не удалось получить ответ Яндекс Диска.'), { status: response.status === 404 ? 404 : 502 });
+    throw Object.assign(new Error(messages[response.status] || 'Не удалось получить ответ Яндекс Диска.'), { status: response.status === 404 ? 404 : 502, upstreamStatus: response.status });
   }
   return response;
 }
@@ -71,6 +89,7 @@ export function createServer(options = {}) {
   const store = options.preparedStore || createPreparedStore();
   const prepared = store && createPreparedService({ source: key, store, yandex });
   let databaseConnected = Boolean(store && !store.ready);
+  let syncStatus = { state: 'waiting', checkedAt: null, issue: null };
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -81,6 +100,26 @@ export function createServer(options = {}) {
     try {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected }); return; }
+      if (url.pathname === '/api/diagnostics') {
+        let database = { state: 'not_configured', issue: 'not_configured' }, catalog = { state: 'unavailable' };
+        if (store) {
+          try {
+            await store.ready?.();
+            databaseConnected = true;
+            database = { state: 'connected', issue: null };
+            if (configured && store.listFolders) {
+              const folders = await store.listFolders(key);
+              catalog = { state: folders.length ? 'ready' : 'empty', resCount: folders.length,
+                enterpriseCount: new Set(folders.map(folder => folder.enterprise_path)).size };
+            }
+          } catch (error) {
+            databaseConnected = false;
+            database = { state: 'error', issue: databaseIssue(error) };
+          }
+        }
+        sendJson(res, 200, { source: { state: configured ? 'configured' : 'error', issue: configured ? null : configuredUrl ? 'invalid_url' : 'not_configured' },
+          database, catalog, sync: syncStatus }); return;
+      }
       if (url.pathname === '/api/load-map') {
         if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Карта загрузки доступна после подключения базы данных.' }); return; }
         sendJson(res, 200, { folders: await store.listFolders(key) }); return;
@@ -168,6 +207,7 @@ export function createServer(options = {}) {
   server.preparedService = prepared;
   server.preparedStore = store;
   server.setDatabaseStatus = value => { databaseConnected = Boolean(value); };
+  server.setSyncStatus = status => { syncStatus = { ...status }; };
   server.on('close', () => { Promise.resolve(store?.close?.()).catch(() => {}); });
   return server;
 }
@@ -192,8 +232,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (server.preparedStore && server.preparedService) {
     const sync = async () => {
       if (!await checkDb()) return;
-      try { await server.preparedService.syncAll(); }
-      catch (error) { console.warn('Обновление данных:', error.message); }
+      server.setSyncStatus({ state: 'running', checkedAt: new Date().toISOString(), issue: null });
+      try { await server.preparedService.syncAll(); server.setSyncStatus({ state: 'ready', checkedAt: new Date().toISOString(), issue: null }); }
+      catch (error) { server.setSyncStatus({ state: 'error', checkedAt: new Date().toISOString(), issue: sourceIssue(error) }); console.warn('Обновление данных:', error.message); }
     };
     setTimeout(sync, 5000).unref();
     setInterval(sync, 15 * 60 * 1000).unref();

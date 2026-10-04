@@ -345,3 +345,24 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 #analysis-settings .boost-option{border-bottom:1px solid #dfe9df;padding:8px 2px}
 #analysis-settings .boost-option:last-child{border-bottom:0}
 @media(max-width:700px){#connection-settings .setting-section,#analysis-settings .analysis-settings-section{padding:15px} .analysis-section-help>summary{right:14px;top:13px}.load-map-enterprise>summary{gap:9px;padding:11px 12px}.load-map-enterprise>summary small{font-size:10px}}
+
+/* Diagnostic cards for red database and registry indicators. */
+.diagnostics-dialog .dialog-body{background:#f8fafc}
+.diagnostic-intro{font-size:13px;line-height:1.65;color:#698095;margin:0 0 17px}
+.diagnostic-card{padding:16px 17px;margin:0 0 11px;border:1px solid #dfe8ed;border-radius:12px;background:#fff;color:#50677b}
+.diagnostic-card[data-state="error"]{background:#fff4f1;border-color:#efdcd7}
+.diagnostic-card[data-state="waiting"]{background:#fff8ed;border-color:#eee3d1}
+.diagnostic-card[data-state="ok"]{background:#f0f7f1;border-color:#dbe9dc}
+.diagnostic-card-title{display:flex;align-items:center;gap:9px}
+.diagnostic-card-title i{flex:none;width:9px;height:9px;border-radius:50%;background:#6ca787;box-shadow:0 0 0 4px #e1efe7}
+.diagnostic-card[data-state="error"] .diagnostic-card-title i{background:#cc7771;box-shadow:0 0 0 4px #f8e3df}
+.diagnostic-card[data-state="waiting"] .diagnostic-card-title i{background:#c9a36b;box-shadow:0 0 0 4px #f8ecd6}
+.diagnostic-card h3{font-size:14px;color:#2c4963;margin:0;line-height:1.4}
+.diagnostic-card>p{font-size:12px;line-height:1.65;margin:10px 0 0;overflow-wrap:anywhere}
+.diagnostic-advice{margin-top:13px;padding:12px 13px;background:#ffffffc9;border-radius:8px;font-size:12px;line-height:1.65;overflow-wrap:anywhere}
+.diagnostic-advice strong{color:#456881}
+.diagnostic-advice p{margin:5px 0 0}
+.diagnostic-footnote{font-size:11px;color:#8091a1;line-height:1.6;margin:17px 0}
+.diagnostic-actions{display:flex;gap:9px;position:sticky;bottom:-24px;padding:12px 0 2px;background:#f8fafc}
+.diagnostic-actions button{flex:1;min-width:0;font-size:12px;padding:10px;min-height:44px}
+@media(max-width:700px){.diagnostics-dialog .dialog-body{padding-bottom:calc(22px + env(safe-area-inset-bottom))}.diagnostic-actions{bottom:calc(-22px - env(safe-area-inset-bottom));padding-bottom:calc(13px + env(safe-area-inset-bottom))}}
