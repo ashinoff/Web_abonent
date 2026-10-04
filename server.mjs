@@ -157,7 +157,9 @@ export function createServer(options = {}) {
           if (req.method === 'HEAD') res.end(); else res.end(result.payload);
         } catch (error) {
           console.warn('Не удалось подготовить Excel:', error.message);
-          sendJson(res, 502, { error: 'Не удалось подготовить Excel на сервере. Проверьте файл или повторите позже.' });
+          if (/памяти|лимит 64 МБ/i.test(error.message)) {
+            sendJson(res, 503, { code: 'memory_limit', error: 'Для подготовки этой книги не хватает памяти Amvera. Нужен тариф с большей памятью или меньший файл.' });
+          } else sendJson(res, 502, { error: 'Не удалось подготовить Excel на сервере. Проверьте файл или повторите позже.' });
         }
         return;
       }

@@ -1,5 +1,5 @@
 import { gzip } from 'node:zlib';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -11,9 +11,38 @@ import { fileURLToPath } from 'node:url';
 import { findSource } from './public/source.js';
 
 const maxBytes = 40 * 1048576;
-const runChild = promisify(execFile);
 const compress = promisify(gzip);
 const childPath = fileURLToPath(new URL('./prepare-child.mjs', import.meta.url));
+function runLimitedChild(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--max-old-space-size=128', childPath, ...args],
+      { stdio: ['ignore','ignore','pipe'], env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
+    let stderr = '', reason = null, checking = false;
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
+    const timeout = setTimeout(() => { reason = 'Подготовка Excel превысила 120 секунд.'; child.kill('SIGKILL'); }, 120000);
+    // V8 heap limits do not cover workbook buffers and native allocations.
+    // Watch actual RSS before the 512 MB container OOM killer acts.
+    const monitor = setInterval(async () => {
+      if (checking || !child.pid || reason) return;
+      checking = true;
+      try {
+        const status = await readFile(`/proc/${child.pid}/status`, 'utf8');
+        const kib = Number(status.match(/^VmRSS:\s*(\d+)\s*kB/m)?.[1]);
+        if (kib && (kib > 160 * 1024 || kib * 1024 + process.memoryUsage().rss > 320 * 1048576)) {
+          reason = 'Недостаточно памяти для подготовки этого Excel на текущем тарифе.';
+          child.kill('SIGKILL');
+        }
+      } catch { /* A completed child may disappear before the next sample. */ }
+      finally { checking = false; }
+    }, 25);
+    child.on('error', error => { reason ||= error.message; });
+    child.on('close', (code, signal) => {
+      clearTimeout(timeout); clearInterval(monitor);
+      if (reason || code !== 0) reject(new Error(reason || stderr.trim() || `Подготовка завершилась (${signal || code}).`));
+      else resolve();
+    });
+  });
+}
 const api = 'https://cloud-api.yandex.net/v1/disk/public/resources';
 const validDownloadUrl = value => {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru','yandex.net','yandex.com','yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith('.' + h)); } catch { return false; }
@@ -56,16 +85,13 @@ export function createPreparedService({ source, store, yandex }) {
     try {
       const path = join(directory, 'workbook');
       const output = join(directory, 'package.json');
-      await runChild(process.execPath,
-        ['--max-old-space-size=128', childPath, path, output, role, filename],
-        { maxBuffer: 4096, timeout: 120000,
-          env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
+      await runLimitedChild([path, output, role, filename]);
       if ((await stat(output)).size > 64 * 1048576) throw new Error('Пакет Excel превышает лимит 64 МБ.');
       return readFile(output, 'utf8');
     } catch (error) {
-      if (error.signal || /heap out of memory|allocation failed/i.test(error.stderr || ''))
+      if (/heap out of memory|allocation failed/i.test(error.message || ''))
         throw new Error('Файл превышает доступный лимит памяти подготовки Excel.');
-      throw new Error((error.stderr || error.message || 'Ошибка подготовки Excel.').trim().slice(0, 400));
+      throw new Error((error.message || 'Ошибка подготовки Excel.').trim().slice(0, 400));
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   const readMeta = (path, role) => store.getMeta ? store.getMeta(source, path, role) : store.get(source, path, role);

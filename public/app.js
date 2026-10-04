@@ -404,7 +404,11 @@ async function downloadFile({ keepSettings = false } = {}) {
         if (!keepSettings) $('#settings-dialog').close();
         toast(data.offline ? 'Реестр открыт с телефона · офлайн' : `Реестр готов: ${recordsText(data.count)}`);
         return;
-      } catch { /* Custom or invalid workbook can still use local mapping. */ }
+      } catch (error) {
+        if ((selectedFile.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+          throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
+        // A small custom workbook can still use local column mapping.
+      }
     }
     const { file, buffer } = await fetchWorkbook(selectedFile); selectedFile = file;
     await loadBuffer(buffer, { name: file.name, folder: folder.name, res: res.name, modified: file.modified, type: 'disk', root: rootUrl(), folderInfo: folder, resInfo: res, fileInfo: file, keepSettings });
@@ -424,7 +428,11 @@ async function readIncomingFile() {
         const info = await monthlyRPC('checkPreparedIncoming', { source: rootUrl(), path: file.path, role: 'incoming' });
         if (op !== operation || incomingFile !== file) return;
         incomingInfo = info; incomingState = 'ready'; setBusy(false); return;
-      } catch { /* The legacy reader provides an actionable error. */ }
+      } catch (error) {
+        if ((file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+          throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
+        // A small incompatible workbook can still use local Excel reading.
+      }
     }
     const { buffer, file: latest } = await fetchWorkbook(file); Object.assign(file, latest);
     if (op!==operation || incomingFile!==file) return;
@@ -444,7 +452,11 @@ async function readConsumptionFile() {
         const info = await monthlyRPC('loadPreparedMonthly', { source: rootUrl(), path: file.path, role: 'consumption', records });
         if (op !== operation || consumptionFile !== file) return;
         consumptionInfo = info; consumptionState = 'ready'; setBusy(false); return;
-      } catch { /* Retain existing local Excel support for incompatible books. */ }
+      } catch (error) {
+        if ((file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+          throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
+        // A small incompatible workbook can still use local Excel reading.
+      }
     }
     const { buffer, file: latest } = await fetchWorkbook(file); Object.assign(file, latest);
     if (op !== operation || consumptionFile !== file) return;

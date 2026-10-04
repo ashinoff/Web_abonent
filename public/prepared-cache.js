@@ -27,9 +27,12 @@ export async function fetchPrepared({ source, path, role }) {
   const saved = await transaction(key, 'get').catch(() => null);
   try {
     if (!self.navigator.onLine) throw new Error('Нет подключения к сети.');
-    const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(90000), headers: saved?.revision ? { 'If-None-Match': `"${saved.revision}"` } : {} });
+    const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(150000), headers: saved?.revision ? { 'If-None-Match': `"${saved.revision}"` } : {} });
     if (response.status === 304 && saved) return { data: JSON.parse(await saved.body.text()), offline: false, cached: true, savedAt: saved.savedAt };
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Подготовленные данные пока недоступны.');
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({}));
+      throw new Error((problem.code === 'memory_limit' ? 'MEMORY_LIMIT: ' : '') + (problem.error || 'Подготовленные данные пока недоступны.'));
+    }
     const body = await response.blob();
     const data = JSON.parse(await body.text());
     let cached = false;
