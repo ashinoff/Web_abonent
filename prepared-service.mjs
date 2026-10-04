@@ -13,9 +13,31 @@ import { findSource } from './public/source.js';
 const maxBytes = 40 * 1048576;
 const compress = promisify(gzip);
 const childPath = fileURLToPath(new URL('./prepare-child.mjs', import.meta.url));
-function runLimitedChild(args) {
+async function memoryBudget() {
+  let detected;
+  for (const path of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const value = Number((await readFile(path, 'utf8')).trim());
+      if (Number.isSafeInteger(value) && value >= 256 * 1048576 && value < 1024 ** 4) {
+        detected = Math.floor(value / 1048576); break;
+      }
+    } catch { /* Local development may have no cgroup limit. */ }
+  }
+  const override = Number(process.env.PREPARE_MEMORY_MB);
+  const configured = Number.isInteger(override) && override >= 512 && override <= 8192 ? override : null;
+  return Math.min(8192, Math.max(256, detected ? Math.min(detected, configured || detected) : configured || 512));
+}
+export function preparationLimits(containerMB) {
+  const heapMB = Math.min(768, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.35));
+  const childMB = Math.min(1200, 160 + Math.floor(Math.max(0, containerMB - 512) * 0.5));
+  const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * 0.8)));
+  const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
+  return { heapMB, childMB, combinedMB, packageMB };
+}
+function runLimitedChild(args, containerMB) {
+  const { heapMB, childMB, combinedMB } = preparationLimits(containerMB);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--max-old-space-size=128', childPath, ...args],
+    const child = spawn(process.execPath, [`--max-old-space-size=${heapMB}`, childPath, ...args],
       { stdio: ['ignore','ignore','pipe'], env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
     let stderr = '', reason = null, checking = false;
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
@@ -28,7 +50,7 @@ function runLimitedChild(args) {
       try {
         const status = await readFile(`/proc/${child.pid}/status`, 'utf8');
         const kib = Number(status.match(/^VmRSS:\s*(\d+)\s*kB/m)?.[1]);
-        if (kib && (kib > 160 * 1024 || kib * 1024 + process.memoryUsage().rss > 320 * 1048576)) {
+        if (kib && (kib > childMB * 1024 || kib * 1024 + process.memoryUsage().rss > combinedMB * 1048576)) {
           reason = 'Недостаточно памяти для подготовки этого Excel на текущем тарифе.';
           child.kill('SIGKILL');
         }
@@ -85,8 +107,10 @@ export function createPreparedService({ source, store, yandex }) {
     try {
       const path = join(directory, 'workbook');
       const output = join(directory, 'package.json');
-      await runLimitedChild([path, output, role, filename]);
-      if ((await stat(output)).size > 64 * 1048576) throw new Error('Пакет Excel превышает лимит 64 МБ.');
+      const containerMB = await memoryBudget();
+      await runLimitedChild([path, output, role, filename], containerMB);
+      const { packageMB } = preparationLimits(containerMB);
+      if ((await stat(output)).size > packageMB * 1048576) throw new Error(`Пакет Excel превышает лимит ${packageMB} МБ.`);
       return readFile(output, 'utf8');
     } catch (error) {
       if (/heap out of memory|allocation failed/i.test(error.message || ''))

@@ -7,7 +7,7 @@ import { unpackRegistry, unpackMonthly } from '../public/prepared-data.js';
 import { buildIndex, search, listNotes, analysisRecords } from '../public/core.js';
 import { createAnalysisService } from '../public/analysis-service.js';
 import { indexMonthly } from '../public/monthly.js';
-import { createPreparedService } from '../prepared-service.mjs';
+import { createPreparedService, preparationLimits } from '../prepared-service.mjs';
 import { createPreparedStore } from '../prepared-store.mjs';
 import { createServer } from '../server.mjs';
 
@@ -124,6 +124,13 @@ test('database config requires every DB_* variable and a valid port', async () =
   await assert.rejects(incomplete.ready(), /DB_PORT.*DB_NAME.*DB_USER.*DB_PASSWORD/);
   const invalid = createPreparedStore({ DB_HOST:'localhost', DB_PORT:'nope', DB_NAME:'local', DB_USER:'local', DB_PASSWORD:'test' });
   await assert.rejects(invalid.ready(), /DB_PORT/);
+});
+
+test('workbook preparation respects 512 MB containers and expands with a larger plan', () => {
+  assert.deepEqual(preparationLimits(512), {heapMB:128,childMB:160,combinedMB:320,packageMB:64});
+  const larger=preparationLimits(2048);
+  assert.ok(larger.heapMB > 128 && larger.childMB > 160 && larger.packageMB > 64);
+  assert.ok(larger.combinedMB < 2048);
 });
 
 test('folder map records ready and missing sources without exposing workbooks', async t => {
