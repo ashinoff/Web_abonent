@@ -142,11 +142,19 @@ async function networkPackage({ path, role, saved, signal, fresh = false }) {
   return { body, revision: response.headers.get('X-Prepared-Revision'), savedAt: Date.now(), stale };
 }
 
-export async function fetchPrepared({ source, path, role, signal }) {
+export async function fetchPrepared({ source, path, role, signal, offlineOnly = false }) {
   const resPath = parentPath(path), key = packageKey({ source, path, role });
   const expected = await generation(source, resPath, signal).catch(() => null);
   const saved = await getRecord('packages', key, signal).catch(() => null);
   signal?.throwIfAborted();
+  if (offlineOnly) {
+    if (!saved || expected === null || await generation(source, resPath, signal) !== expected)
+      throw new Error('На телефоне нет сохранённой копии этого файла. Скачайте РЭС заново при наличии связи.');
+    const data = JSON.parse(await saved.body.text());
+    signal?.throwIfAborted();
+    if (data.format !== 1 || data.role !== role) throw new Error('Сохранённая копия повреждена. Скачайте РЭС заново при наличии связи.');
+    return { data, offline:true, cached:true, savedAt:saved.savedAt, revision:saved.revision, stale:saved.stale };
+  }
   try {
     const value = await networkPackage({ path, role, saved, signal });
     const data = JSON.parse(await value.body.text());

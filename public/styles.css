@@ -373,6 +373,11 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .source-indicator.load-stop>svg{width:15px;height:15px;color:inherit;fill:currentColor;stroke-width:0}
 .load-stop>span{font-size:9px;line-height:1.2}
 .source-indicator.load-stop:hover{background:#b8534760}
+.source-indicator.offline-open{width:58px;flex-direction:column;gap:1px;font-size:9px;background:#315c7545;border-color:#9dd4dc55}
+.source-indicator.offline-open>svg{width:17px;height:17px;color:#c7f0e5}
+.source-indicator.offline-open:hover{background:#39738d60}
+#offline-list .choice-item strong{font-weight:600}
+#offline-list .choice-item:disabled{opacity:.65}
 .selection-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
 .selection-actions .secondary,.selection-stop{font-size:12px;min-height:40px}
 .selection-stop{color:#994f44;background:#faebe6;border:1px solid #e6c6ba}

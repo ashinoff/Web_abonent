@@ -9,7 +9,7 @@ import { initAnalysisUI } from './analysis-ui.js';
 import { initNotesUI } from './notes-ui.js';
 import { calculateReading } from './readings.js';
 import { initLoadMap } from './load-map.js';
-import { folderSources, offlineDirectory } from './offline-copies.js';
+import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
 import { listOfflineCopies } from './prepared-cache.js';
@@ -35,6 +35,7 @@ let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker,
 let folderItems = [], filesState = 'idle', filesError = '', registryError = '', consumptionInfo = null, incomingInfo = null;
 let directoryOffline = false;
 let shellReady = false;
+let offlineChoices = [], offlineSource = '', offlineListVersion = 0;
 let tpChoices = [], tpSelection = null, tpMeters = [], tpVersion = 0, tpBusy = false, recordVersion = 0;
 let recordContext = { parent: null, variants: [] };
 let tpViewKey = '', tpPickerQuery = '', tpPickerScroll = 0, tpFilterTimer = null;
@@ -137,6 +138,49 @@ function showRes() {
   if (resState === 'error' && !busy) openFolder(selectedFolder, { choose: true });
 }
 function rootUrl() { return clean(config.publicUrl); }
+async function showOfflineCopies() {
+  const version = ++offlineListVersion, source = rootUrl() || prefs.root || '';
+  openDialog('offline-dialog');
+  const list = $('#offline-list');
+  offlineChoices = []; offlineSource = source;
+  list.setAttribute('aria-busy', 'true');
+  list.innerHTML = '<div class="enterprise-loading" role="status"><span class="loading-indicator" aria-hidden="true"></span><span>Читаем сохранённые РЭС…</span></div>';
+  try {
+    const copies = await listOfflineCopies(source);
+    if (version !== offlineListVersion || !$('#offline-dialog').open || source !== (rootUrl() || prefs.root || '')) return;
+    offlineChoices = copies.sort((a, b) => a.resPath.localeCompare(b.resPath, 'ru'));
+    const enterprises = offlineDirectory(copies, '/') || [];
+    list.innerHTML = copies.length ? copies.map((copy, i) => {
+      const enterprise = enterprises.find(folder => copy.resPath.startsWith(folder.path + '/'));
+      const res = offlineDirectory(copies, enterprise?.path)?.find(folder => folder.path === copy.resPath);
+      const ready = copy.files.some(file => file.role === 'registry');
+      const selected = source === rootUrl() && selectedRes?.path === copy.resPath;
+      const parts = sourceRoles.filter(([role]) => copy.files.some(file => file.role === role)).map(([, label]) => label).join(' · ');
+      return `<button type="button" class="choice-item ${selected ? 'selected' : ''}" data-offline-res="${i}" aria-pressed="${selected}" ${ready ? '' : 'disabled'}><span><strong>${esc(res?.name || copy.resPath.split('/').at(-1))}</strong><small>${esc(enterprise?.name || '')} · ${formatBytes(copy.bytes)}</small><small>${esc(parts)}${ready ? '' : ' · Для поиска ещё нужен реестр'}</small></span><i class="choice-dot" aria-hidden="true"></i></button>`;
+    }).join('') : '<div class="enterprise-empty"><p>На телефоне пока нет сохранённых РЭС.</p><p class="hint">Со связью откройте «Карту загрузки» и нажмите «Скачать на телефон» возле нужной РЭС.</p></div>';
+  } catch (error) {
+    if (version === offlineListVersion && $('#offline-dialog').open) list.innerHTML = `<div class="enterprise-empty"><p>Не удалось прочитать сохранённые РЭС.</p><p class="hint">${esc(error.message)}</p></div>`;
+  } finally { if (version === offlineListVersion) list.setAttribute('aria-busy', 'false'); }
+}
+async function selectOfflineRes(i) {
+  const copy = offlineChoices[i], source = offlineSource;
+  if (!copy?.files.some(file => file.role === 'registry') || source !== (rootUrl() || prefs.root || '')) return;
+  const savedDirectory = path => {
+    try { const items = JSON.parse(localStorage.getItem('abonent.folder.v1:' + source + ':' + path) || 'null'); if (Array.isArray(items)) return items.filter(item => item.type === 'dir'); } catch {}
+    return offlineDirectory(offlineChoices, path) || [];
+  };
+  const enterprisePath = copy.resPath.slice(0, copy.resPath.lastIndexOf('/')) || '/';
+  folders = savedDirectory('/');
+  selectedFolder = folders.find(folder => folder.path === enterprisePath) || { type:'dir', path:enterprisePath, name:enterprisePath.split('/').filter(Boolean).at(-1) || enterprisePath };
+  if (!folders.some(folder => folder.path === enterprisePath)) folders.push(selectedFolder);
+  resFolders = savedDirectory(enterprisePath);
+  const res = resFolders.find(folder => folder.path === copy.resPath) || { type:'dir', path:copy.resPath, name:copy.resPath.split('/').at(-1) };
+  if (!resFolders.some(folder => folder.path === res.path)) resFolders.push(res);
+  proxy = true; config = { ...config, publicUrl:source, prepared:true };
+  sourceState = 'ready'; directoryState = 'ready'; directoryOffline = true; resState = 'ready'; diskState = 'disconnected'; folderRead = null;
+  $('#offline-dialog').close(); renderFolders(); renderSourceState();
+  await openRes(res, { offlineCopy:copy });
+}
 function renderIndicators() {
   notesUI.update(summary, busy);
   document.querySelectorAll('[data-stop-loading]').forEach(button => { button.hidden = !(busy || sourceState === 'loading' || directoryState === 'loading'); });
@@ -150,7 +194,7 @@ function renderIndicators() {
   }
   const cachedOffline = summary?.offline || consumptionInfo?.offline || incomingInfo?.offline;
   const baseState = sourceState === 'loading' ? 'checking' : !config.prepared ? (proxy ? 'off' : 'idle') : !navigator.onLine || cachedOffline ? 'off' : config.databaseConnected ? 'on' : 'off';
-  const baseText = baseState === 'checking' ? 'Проверяем подключение к базе…' : !config.prepared ? 'База не подключена · доступен прежний режим Excel' : baseState === 'on' ? 'Подготовленные данные базы доступны' : !navigator.onLine || cachedOffline ? 'База недоступна · открыты сохранённые данные' : 'Нет связи с базой данных';
+  const baseText = baseState === 'checking' ? 'Проверяем подключение к базе…' : !config.prepared ? 'База не подключена · доступен прежний режим Excel' : cachedOffline ? 'Открыты сохранённые данные с телефона' : baseState === 'on' ? 'Подготовленные данные базы доступны' : !navigator.onLine ? 'База недоступна · открыты сохранённые данные' : 'Нет связи с базой данных';
   const registryText = registryState === 'ready' || summary ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : pending ? 'Подтвердите столбцы в настройках' : registryError || (registryState === 'missing' ? 'Файл реестра не найден' : registryState === 'error' ? 'Реестр не загружен' : 'Сначала выберите РЭС');
   const consumptionText = consumptionState === 'ready' ? 'Готов к анализу: ' + (consumptionFile?.name || 'Демонстрация') : consumptionState === 'checking' ? `Читаем «${consumptionFile?.name || CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
   const incomingText = incomingState === 'ready' ? 'Прочитан: ' + incomingFile.name + ' · баланс ожидает формат' : incomingState === 'checking' ? 'Читаем файл приёма…' : incomingState === 'missing' ? `Файл «${INCOMING_NAME}» не найден` : incomingState === 'error' ? incomingError || 'Не удалось прочитать приём' : 'Сначала выберите РЭС';
@@ -390,7 +434,7 @@ async function useSourceFile(role, path) {
   else { incomingFile = file; await readIncomingFile(signal); }
   if (loads.current(signal) && (role === 'consumption' ? consumptionState : incomingState) === 'ready') toast('Файл прочитан: ' + file.name);
 }
-async function openRes(res, { keepSettings = false } = {}) {
+async function openRes(res, { keepSettings = false, offlineCopy = null } = {}) {
   if (!selectedFolder) return;
   const signal = loads.start();
   clearResSelection(); selectedRes = res;
@@ -400,19 +444,21 @@ async function openRes(res, { keepSettings = false } = {}) {
   try {
     setBusy(true, 'Читаем файлы РЭС…');
     filesState = 'loading'; renderIndicators();
-    let items = await listFolder(res.path, false, signal);
+    const offlineOnly = Boolean(offlineCopy);
+    let items = offlineOnly ? offlineCopy.files.map(file => ({ type:'file', path:file.path, name:file.path.split('/').at(-1) })) : await listFolder(res.path, false, signal);
     if (!loads.current(signal)) return;
-    if (proxy && config.prepared && Object.values(prefs.fileChoices || {}).some(choice => choice?.path && !items.some(item => item.path === choice.path))) {
+    if (!offlineOnly && proxy && config.prepared && Object.values(prefs.fileChoices || {}).some(choice => choice?.path && !items.some(item => item.path === choice.path))) {
       items = await listFolder(res.path, true, signal);
       if (!loads.current(signal)) return;
     }
     folderItems = items.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     let choices = prefs.fileChoices;
-    if (directoryOffline && config.prepared) {
-      const copy = (await listOfflineCopies(rootUrl()).catch(() => [])).find(item => item.resPath === res.path);
+    if ((offlineOnly || directoryOffline) && config.prepared) {
+      const copy = offlineCopy || (await listOfflineCopies(rootUrl()).catch(() => [])).find(item => item.resPath === res.path);
       if (!loads.current(signal)) return;
       const savedChoices = Object.fromEntries((copy?.files || []).map(file => [file.role, { path:file.path }]));
-      choices = { ...savedChoices, ...prefs.fileChoices };
+      choices = offlineOnly ? savedChoices : { ...savedChoices, ...prefs.fileChoices };
+      if (offlineOnly) { prefs.fileChoices = savedChoices; savePrefs(); }
     }
     filesState = 'ready'; diskState = directoryOffline ? 'disconnected' : 'connected';
     consumptionFile = findSource(folderItems, 'consumption', choices); consumptionState = consumptionFile ? 'checking' : 'missing';
@@ -425,13 +471,13 @@ async function openRes(res, { keepSettings = false } = {}) {
     setBusy(false); message('#settings-message', error.message); showSettings(); return;
   }
   setBusy(false);
-  if (selectedFile) await downloadFile({ keepSettings, signal });
+  if (selectedFile) await downloadFile({ keepSettings, signal, offlineOnly:Boolean(offlineCopy) });
   else {
     registryState = 'missing'; renderIndicators();
     message('#settings-message', 'Реестр не найден. Выберите файл вручную в разделе «Просмотр файлов».'); showSettings();
   }
-  if (loads.current(signal) && consumptionFile) await readConsumptionFile(signal);
-  if (loads.current(signal) && incomingFile) await readIncomingFile(signal);
+  if (loads.current(signal) && consumptionFile) await readConsumptionFile(signal, Boolean(offlineCopy));
+  if (loads.current(signal) && incomingFile) await readIncomingFile(signal, Boolean(offlineCopy));
 }
 async function fetchWorkbook(file, signal = loads.signal) {
   if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Файл больше 40 МБ.');
@@ -453,16 +499,16 @@ async function fetchWorkbook(file, signal = loads.signal) {
   const buffer = await readBoundedBuffer(response, (config.maxFileMB || 40) * 1048576, file.size);
   signal.throwIfAborted(); return { file, buffer };
 }
-async function downloadFile({ keepSettings = false, signal = loads.signal } = {}) {
+async function downloadFile({ keepSettings = false, signal = loads.signal, offlineOnly = false } = {}) {
   if (busy || !selectedFile || !selectedFolder || !selectedRes || !loads.current(signal)) return;
   const folder = selectedFolder, res = selectedRes, selected = selectedFile;
   try {
     registryState = 'checking'; registryError = ''; setBusy(true, 'Загружаем реестр…');
-    if (proxy && config.prepared && !customMappingSaved() && selected.path) {
+    if (proxy && config.prepared && (offlineOnly || !customMappingSaved()) && selected.path) {
       try {
         const listedIncoming = incomingFile;
         clearDataset(true); incomingFile = listedIncoming; incomingState = listedIncoming ? 'checking' : 'missing';
-        const data = await rpc('loadPreparedRegistry', { source: rootUrl(), path: selected.path, role: 'registry' });
+        const data = await rpc('loadPreparedRegistry', { source: rootUrl(), path: selected.path, role: 'registry', offlineOnly });
         if (!loads.current(signal)) return;
         currentSource = { type: 'disk', name: selected.name, folder: folder.name, res: res.name,
           root: rootUrl(), folderInfo: folder, resInfo: res, fileInfo: selected, keepSettings };
@@ -473,7 +519,7 @@ async function downloadFile({ keepSettings = false, signal = loads.signal } = {}
         return;
       } catch (error) {
         if (!loads.current(signal)) return;
-        if ((selected.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+        if (offlineOnly || (selected.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
       }
     }
@@ -491,19 +537,19 @@ async function loadMonthlyBuffer(buffer) {
   if (op !== operation) throw new Error('Рабочая область изменилась.');
   return monthlyRPC('loadMonthly', { buffer, records }, [buffer]);
 }
-async function readIncomingFile(signal = loads.signal) {
+async function readIncomingFile(signal = loads.signal, offlineOnly = false) {
   if (!loads.current(signal)) return;
   const op=operation, file=incomingFile;
   incomingState='checking'; incomingError=''; incomingInfo=null; setBusy(true, 'Читаем файл приёма…');
   try {
     if (proxy && config.prepared && file.path) {
       try {
-        const info = await incomingRPC('checkPreparedIncoming', { source: rootUrl(), path: file.path, role: 'incoming' }, [], signal);
+        const info = await incomingRPC('checkPreparedIncoming', { source: rootUrl(), path: file.path, role: 'incoming', offlineOnly }, [], signal);
         if (op !== operation || incomingFile !== file) return;
         incomingInfo = info; incomingState = 'ready'; setBusy(false); return;
       } catch (error) {
         if (!loads.current(signal) || op !== operation) return;
-        if ((file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+        if (offlineOnly || (file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
         // A small incompatible workbook can still use local Excel reading.
       }
@@ -518,7 +564,7 @@ async function readIncomingFile(signal = loads.signal) {
   } catch(error) { if(op!==operation || incomingFile!==file)return;incomingState='error';incomingError=error.message; }
   if (op===operation) setBusy(false);
 }
-async function readConsumptionFile(signal = loads.signal) {
+async function readConsumptionFile(signal = loads.signal, offlineOnly = false) {
   if (!loads.current(signal)) return;
   const op = operation, file = consumptionFile;
   consumptionState = 'checking'; consumptionError = ''; consumptionInfo = null; resetMonthly(); analysisUI.reset(); setBusy(true, 'Читаем файл потребления…');
@@ -527,12 +573,12 @@ async function readConsumptionFile(signal = loads.signal) {
       try {
         const records = await rpc('analysisRecords');
         if (!loads.current(signal) || op !== operation) return;
-        const info = await monthlyRPC('loadPreparedMonthly', { source: rootUrl(), path: file.path, role: 'consumption', records });
+        const info = await monthlyRPC('loadPreparedMonthly', { source: rootUrl(), path: file.path, role: 'consumption', records, offlineOnly });
         if (op !== operation || consumptionFile !== file) return;
         consumptionInfo = info; consumptionState = 'ready'; setBusy(false); return;
       } catch (error) {
         if (!loads.current(signal) || op !== operation) return;
-        if ((file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
+        if (offlineOnly || (file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
         // A small incompatible workbook can still use local Excel reading.
       }
@@ -854,6 +900,8 @@ function applyReading(box) {
 document.addEventListener('click',e=>{const button=e.target.closest('[data-reading-action]');if(button)applyReading(button.closest('.reading-calculator'));});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.reading-calculator')){e.preventDefault();applyReading(e.target.closest('.reading-calculator'));}});
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises); $('#res-button').addEventListener('click', showRes);
+$('#offline-open').addEventListener('click', showOfflineCopies);
+$('#offline-list').addEventListener('click', e => { const button = e.target.closest('[data-offline-res]'); if (button && !button.disabled) selectOfflineRes(Number(button.dataset.offlineRes)); });
 document.addEventListener('click', e => {
   const indicator = e.target.closest('#base-indicator, #registry-indicator');
   if (indicator?.dataset.state === 'off') { diagnosticsUI.open(indicator.id === 'base-indicator' ? 'base' : 'registry'); return; }

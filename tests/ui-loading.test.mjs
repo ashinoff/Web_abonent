@@ -70,9 +70,12 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
   }
   globalThis.Worker = WorkbookWorker;
   const slowRegistry = deferred(), registryStarted = deferred(), slowMonthly = deferred(), monthlyStarted = deferred();
-  let folderDelay = null, failUpdate = false, revision = '1', slowIncoming = null;
+  let folderDelay = null, failUpdate = false, revision = '1', slowIncoming = null, blockNetwork = false;
+  const networkCalls = [];
   t.mock.method(globalThis,'fetch',async (input, opts = {}) => {
     const url = new URL(input), path = url.searchParams.get('path') || '/';
+    networkCalls.push(url.href);
+    if (blockNetwork) throw new Error('Network is unavailable');
     if (!nav.onLine) throw new Error('offline');
     if (url.pathname === '/api/config') return Response.json({ proxy:true,prepared:true,databaseConnected:true,publicUrl:source });
     if (url.pathname === '/api/load-map') return Response.json({ folders });
@@ -98,6 +101,18 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
   await until(() => $('#folder-list').querySelectorAll('[data-folder]').length === 2,'initial enterprise choices');
   const enterprise = name => [...$('#folder-list').querySelectorAll('[data-folder]')].find(item => item.textContent.includes(name));
   const res = name => [...$('#res-list').querySelectorAll('[data-res]')].find(item => item.textContent.includes(name));
+
+  await t.test('offline button is next to the indicators and explains an empty phone without using the network', async () => {
+    assert.ok($('.source-indicators #offline-open'));
+    const before = networkCalls.length;
+    $('#offline-open').click();
+    await until(() => $('#offline-list').getAttribute('aria-busy') === 'false','empty offline list');
+    assert.equal($('#offline-dialog').open, true);
+    assert.match($('#offline-list').textContent, /пока нет сохранённых РЭС/);
+    assert.equal($('#offline-list').querySelectorAll('[data-offline-res]').length, 0);
+    assert.equal(networkCalls.length, before);
+    $('#offline-dialog').close();
+  });
 
   await t.test('switching while a registry request hangs cancels it and ignores its late result', async () => {
     $('#district-button').click(); enterprise('ЭС А').click();
@@ -143,6 +158,26 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     $('#search-input').value = '00123'; $('#search-form').dispatchEvent(new page.Event('submit',{bubbles:true,cancelable:true}));
     await until(() => $('#results').textContent.includes('Вымышленный абонент'),'search after incoming stop');
   });
+  await t.test('offline shortcut lists only saved RES and opens registry, PO and incoming without requests even online', async () => {
+    const beforeCopies = await listOfflineCopies(source), beforeRequests = networkCalls.length;
+    blockNetwork = true;
+    try {
+      $('#offline-open').click();
+      await until(() => $('#offline-list').querySelectorAll('[data-offline-res]').length === 2,'saved-only choices');
+      assert.equal($('#offline-list').textContent.includes('Долгая РЭС'), false);
+      const choice = [...$('#offline-list').querySelectorAll('[data-offline-res]')].find(item => item.textContent.includes('Другая РЭС'));
+      assert.match(choice.textContent, /ЭС Б/); assert.match(choice.textContent, /Реестр · ПО · Приём/);
+      choice.click();
+      await until(() => $('#incoming-indicator').dataset.state === 'on' && $('#offline-readiness').dataset.ready === 'true','local-only registry, consumption and incoming');
+      assert.equal(nav.onLine, true); assert.equal($('#offline-dialog').open, false);
+      assert.equal($('#district-label').textContent, 'ЭС Б'); assert.equal($('#res-label').textContent, 'Другая РЭС');
+      assert.equal($('#registry-indicator').dataset.state, 'on'); assert.equal($('#consumption-indicator').dataset.state, 'on');
+      $('#search-input').value = '00123'; $('#search-form').dispatchEvent(new page.Event('submit',{bubbles:true,cancelable:true}));
+      await until(() => $('#results').textContent.includes('Вымышленный абонент'),'search from offline choice');
+      assert.equal(networkCalls.length, beforeRequests);
+      assert.deepEqual(await listOfflineCopies(source), beforeCopies);
+    } finally { blockNetwork = false; }
+  });
   await t.test('saved directories open the downloaded RES offline and deletion clears only its readiness', async () => {
     nav.onLine = false; page.dispatchEvent(new page.Event('offline'));
     $('#res-button').click(); res('Другая РЭС').click();
@@ -155,5 +190,19 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     await until(() => row('Другая РЭС').querySelector('.offline-copy').dataset.state === 'missing','deleted local copy');
     assert.equal((await listOfflineCopies(source)).length,1); assert.equal($('#offline-readiness').dataset.ready,'false');
     assert.equal($('#registry-indicator').dataset.state,'on'); assert.equal($('#search-submit').disabled,false);
+  });
+  await t.test('airplane mode chooser reflects deletion and directly opens a saved RES from another enterprise', async () => {
+    const beforeRequests = networkCalls.length;
+    $('#offline-open').click();
+    await until(() => $('#offline-list').getAttribute('aria-busy') === 'false','updated offline choices');
+    const choices = $('#offline-list').querySelectorAll('[data-offline-res]');
+    assert.equal(choices.length, 1); assert.match(choices[0].textContent, /Готовая РЭС/);
+    assert.equal($('#offline-list').textContent.includes('Другая РЭС'), false);
+    choices[0].click();
+    await until(() => $('#registry-indicator').dataset.state === 'on' && $('#load-stop').hidden,'saved registry from another enterprise');
+    assert.equal($('#district-label').textContent, 'ЭС А'); assert.equal($('#res-label').textContent, 'Готовая РЭС');
+    assert.equal($('#consumption-indicator').dataset.state, 'off'); assert.equal($('#incoming-indicator').dataset.state, 'off');
+    assert.equal($('#search-submit').disabled, false); assert.equal($('#settings-dialog').open, false);
+    assert.equal(networkCalls.length, beforeRequests);
   });
 });

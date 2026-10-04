@@ -51,6 +51,22 @@ test('opened RES caches only requested files, reads offline and prunes an old fi
   await assert.rejects(fetchPrepared({ source, ...registry }), /Нет подключения/);
 });
 
+test('explicit offline choice uses saved data even online and never requests missing or deleted files', async t => {
+  network(t);
+  await downloadOfflineCopy(options([registry, monthly]));
+  const before = await listOfflineCopies(source);
+  const blocked = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Network must not be used by an offline choice'); });
+  const result = await fetchPrepared({ source, ...registry, offlineOnly:true });
+  assert.equal(navigator.onLine, true);
+  assert.equal(result.offline, true); assert.equal(result.cached, true);
+  assert.deepEqual(result.data, pack('registry', '1'));
+  assert.deepEqual(await listOfflineCopies(source), before);
+  await assert.rejects(fetchPrepared({ source, ...incoming, offlineOnly:true }), /нет сохранённой копии/);
+  await deleteOfflineCopy(source, '/ЭС/РЭС');
+  await assert.rejects(fetchPrepared({ source, ...registry, offlineOnly:true }), /нет сохранённой копии/);
+  assert.equal(blocked.mock.callCount(), 0);
+});
+
 test('deleting one copy keeps other RES and public-folder sources intact', async t => {
   network(t);
   await fetchPrepared({ source, ...registry }); await fetchPrepared({ source, ...monthly });
