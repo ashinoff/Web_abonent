@@ -9,6 +9,9 @@ export function createPreparedStore(env = process.env) {
     host: env.DB_HOST, port, database: env.DB_NAME, user: env.DB_USER, password: env.DB_PASSWORD,
     max: 2, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000, ssl: false,
   });
+  // An idle connection can disappear when the database restarts. Without an
+  // error listener pg.Pool would terminate the whole application.
+  pool?.on('error', error => console.error(`DB error: ${error.message}`));
   let initialized;
   async function ready() {
     if (missing.length) throw new Error(`Отсутствуют переменные: ${missing.join(', ')}`);
@@ -17,7 +20,8 @@ export function createPreparedStore(env = process.env) {
       source text NOT NULL, path text NOT NULL, role text NOT NULL, revision text NOT NULL,
       data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (source, path, role)
-    )`).then(() => pool.query(`CREATE TABLE IF NOT EXISTS abonent_folder_status (
+    )`).then(() => pool.query(`ALTER TABLE abonent_snapshots ADD COLUMN IF NOT EXISTS payload_json json`))
+    .then(() => pool.query(`CREATE TABLE IF NOT EXISTS abonent_folder_status (
       source text NOT NULL, res_path text NOT NULL, enterprise_path text NOT NULL,
       enterprise_name text NOT NULL, res_name text NOT NULL,
       statuses jsonb NOT NULL, checked_at timestamptz NOT NULL DEFAULT now(),
@@ -25,16 +29,28 @@ export function createPreparedStore(env = process.env) {
     )`)).catch(error => { initialized = null; throw error; });
     await initialized;
   }
+  async function writeRaw(source, path, role, revision, json) {
+    await ready();
+    // Packages are read whole; SQL never searches their contents. JSON retains
+    // the prepared text without building millions of JSONB nodes on a small DB.
+    // The nullable column leaves all existing snapshots readable without a rewrite.
+    await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data,payload_json) VALUES ($1,$2,$3,$4,'null'::jsonb,$5::json)
+      ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,payload_json=EXCLUDED.payload_json,updated_at=now()`,
+    [source, path, role, revision, json]);
+  }
   return {
+    snapshotStorage: 'json',
     ready,
     async get(source, path, role) {
       await ready();
-      const { rows } = await pool.query('SELECT revision, data, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
-      return rows[0] || null;
+      const { rows } = await pool.query('SELECT revision, COALESCE(payload_json::text, data::text) AS json, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
+      if (!rows[0]) return null;
+      const { json, ...entry } = rows[0];
+      return { ...entry, data: JSON.parse(json) };
     },
     async getJson(source, path, role) {
       await ready();
-      const { rows } = await pool.query('SELECT revision, data::text AS json, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
+      const { rows } = await pool.query('SELECT revision, COALESCE(payload_json::text, data::text) AS json, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
       return rows[0] || null;
     },
     async getRevision(source, path, role) {
@@ -48,17 +64,9 @@ export function createPreparedStore(env = process.env) {
       return rows[0] || null;
     },
     async put(source, path, role, revision, data) {
-      await ready();
-      await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data) VALUES ($1,$2,$3,$4,$5)
-        ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,updated_at=now()`,
-      [source, path, role, revision, data]);
+      await writeRaw(source, path, role, revision, JSON.stringify(data));
     },
-    async putRaw(source, path, role, revision, json) {
-      await ready();
-      await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data) VALUES ($1,$2,$3,$4,$5::jsonb)
-        ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,updated_at=now()`,
-      [source, path, role, revision, json]);
-    },
+    putRaw: writeRaw,
     async putFolder(source, folder, statuses) {
       await ready();
       await pool.query(`INSERT INTO abonent_folder_status

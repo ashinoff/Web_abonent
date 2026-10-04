@@ -139,7 +139,7 @@ export function createServer(options = {}) {
           }
         }
         sendJson(res, 200, { source: { state: configured ? 'configured' : 'error', issue: configured ? null : configuredUrl ? 'invalid_url' : 'not_configured' },
-          database, catalog, sync: syncStatus, memory: await preparationMemory() }); return;
+          database, catalog, sync: syncStatus, memory: await preparationMemory(), snapshotStorage: store?.snapshotStorage || null }); return;
       }
       if (url.pathname === '/api/load-map') {
         if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Карта загрузки доступна после подключения базы данных.' }); return; }
