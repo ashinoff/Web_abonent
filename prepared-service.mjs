@@ -40,8 +40,11 @@ export function preparationLimits(containerMB) {
   // collection before those buffers push the whole child over the RSS guard.
   const heapMB = Math.min(1536, 128 + Math.floor(Math.max(0, containerMB - 512) * 0.75),
     512 + Math.floor(Math.max(0, containerMB - 1024) * 0.25));
-  const childMB = Math.min(2000, 160 + Math.max(0, containerMB - 512));
-  const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * 0.85)));
+  const largerContainer = containerMB >= 1536;
+  const childMB = Math.min(2000, largerContainer ? Math.floor(containerMB * 0.85) : 160 + Math.max(0, containerMB - 512));
+  // Keep at least 192 MiB (and 10% on larger plans) outside both processes for
+  // page cache and the container. The combined guard also includes live API work.
+  const combinedMB = Math.max(160, Math.min(containerMB - 192, Math.floor(containerMB * (largerContainer ? 0.9 : 0.85))));
   const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
   return { heapMB, childMB, combinedMB, packageMB };
 }
