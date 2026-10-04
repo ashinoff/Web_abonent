@@ -15,14 +15,17 @@ export function initLoadMap(root) {
       if (!groups.has(key)) groups.set(key, { name: folder.enterprise_name, folders: [] });
       groups.get(key).folders.push(folder);
     }
-    list.innerHTML = [...groups.values()].map((group, i) => `<details class="load-map-enterprise" ${i === 0 ? 'open' : ''}><summary><svg aria-hidden="true"><use href="#i-folder"/></svg><strong>${esc(group.name)}</strong><small>${group.folders.length} РЭС</small><svg class="load-map-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></summary><div class="load-map-res-list">${group.folders.map(folder => {
+    list.innerHTML = [...groups.values()].map(group => {
+      const hasFiles = group.folders.some(folder => Object.values(folder.statuses || {}).some(item => item?.file || (item?.state && item.state !== 'missing')));
+      return `<details class="load-map-enterprise"><summary><i class="load-map-lamp" data-state="${hasFiles ? 'present' : 'empty'}" aria-hidden="true"></i><strong>${esc(group.name)}</strong><small>${group.folders.length} РЭС · ${hasFiles ? 'есть файлы' : 'нет файлов'}</small><svg class="load-map-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></summary><div class="load-map-res-list">${group.folders.map(folder => {
       const statuses = folder.statuses || {};
       const ready = roles.filter(([key]) => statuses[key]?.state === 'ready').length;
       return `<article class="load-map-res"><div class="load-map-res-title"><strong>${esc(folder.res_name)}</strong><small>${ready} из 3 готово</small></div><div class="load-map-statuses">${roles.map(([key,label]) => {
         const item = statuses[key] || { state:'missing' }, state = states[item.state] ? item.state : 'error';
         return `<span class="load-map-status" data-state="${state}" title="${esc(item.file || label)}"><i aria-hidden="true"></i>${label}: ${states[state]}</span>`;
       }).join('')}</div><small class="load-map-date">Проверено: ${esc(date(folder.checked_at))}</small></article>`;
-    }).join('')}</div></details>`).join('');
+    }).join('')}</div></details>`;
+    }).join('');
   }
   async function refresh() {
     if (loading) return;
