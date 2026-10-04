@@ -105,13 +105,17 @@ export function parseMatrix(matrix, { sheet = 'Лист1', file = '', merges = [
   for (let r = layout.end + 1; r < matrix.length; r++) {
     const values = Array.from({ length: layout.labels.length }, (_, c) => clean(matrix[r]?.[c]));
     if (!values.some(Boolean) || headerScore(values) >= 8 || /^(итого|всего)(\s|$)/i.test(values[0])) continue;
-    const get = key => values[layout.mapping[key]] || '';
-    if (!get('meter') && !get('account')) continue;
-    const address = [get('locality'), get('street'), get('house') && `д. ${get('house')}`, get('building') && `корп. ${get('building')}`, get('flat') && `кв. ${get('flat')}`].filter(Boolean).join(', ') || get('address');
-    const fields = Object.fromEntries(Object.keys(layout.mapping).map(key => [key, get(key)]));
-    records.push({ id: `${sheet}:${r + 1}`, row: r + 1, sheet, file, values, fields, address, meterKey: idKey(get('meter')), accountKey: idKey(get('account')), addressKey: norm(address) });
+    const record = recordFromValues(values, layout, sheet, file, r + 1);
+    if (!record.fields.meter && !record.fields.account) continue;
+    records.push(record);
   }
   return { records, layout, sheet, file, sample: records.slice(0, 3).map(r => r.values) };
+}
+export function recordFromValues(values, layout, sheet, file, row) {
+    const get = key => values[layout.mapping[key]] || '';
+    const address = [get('locality'), get('street'), get('house') && `д. ${get('house')}`, get('building') && `корп. ${get('building')}`, get('flat') && `кв. ${get('flat')}`].filter(Boolean).join(', ') || get('address');
+    const fields = Object.fromEntries(Object.keys(layout.mapping).map(key => [key, get(key)]));
+    return { id: `${sheet}:${row}`, row, sheet, file, values, fields, address, meterKey: idKey(get('meter')), accountKey: idKey(get('account')), addressKey: norm(address) };
 }
 export function buildIndex(sheets) {
   const records = sheets.flatMap(s => s.records);

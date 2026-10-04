@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
+import { createPreparedStore } from './prepared-store.mjs';
+import { createPreparedService } from './prepared-service.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -32,7 +34,7 @@ function authorized(req) {
   const actual = Buffer.from(req.headers.authorization || '');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
-export function createServer() {
+export function createServer(options = {}) {
   // Amvera injects this once for the whole application, not separately per device.
   const configuredUrl = (process.env.YANDEX_PUBLIC_URL || '').trim();
   const configured = validPublicUrl(configuredUrl);
@@ -48,7 +50,9 @@ export function createServer() {
     }
     return pendingMetadata.get(key);
   }
-  return http.createServer(async (req, res) => {
+  const store = options.preparedStore || createPreparedStore();
+  const prepared = store && createPreparedService({ source: key, store, yandex });
+  const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -57,7 +61,27 @@ export function createServer() {
     if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: 'Метод не поддерживается.' }); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40 }); return; }
+      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared) }); return; }
+      if (url.pathname === '/api/prepared') {
+        if (!prepared) { sendJson(res, 503, { error: 'Серверная подготовка ещё не подключена.' }); return; }
+        const path = url.searchParams.get('path') || '';
+        const role = url.searchParams.get('role') || '';
+        if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !['registry','consumption','incoming'].includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
+        try {
+          const result = await prepared.load(path, role);
+          if (res.destroyed) return;
+          const revision = Buffer.from(result.revision).toString('base64url');
+          if (req.headers['if-none-match'] === `"${revision}"`) {
+            res.writeHead(304, { 'ETag': `"${revision}"`, 'Cache-Control': 'no-store' }); res.end(); return;
+          }
+          res.writeHead(200, { 'Content-Type': types['.json'], 'Content-Encoding': 'gzip', 'Cache-Control': 'no-store', 'ETag': `"${revision}"`, 'X-Prepared-Revision': revision, 'X-Prepared-Stale': result.stale ? '1' : '0' });
+          if (req.method === 'HEAD') res.end(); else res.end(result.payload);
+        } catch (error) {
+          console.warn('Не удалось подготовить Excel:', error.message);
+          sendJson(res, 502, { error: 'Не удалось подготовить Excel на сервере. Проверьте файл или повторите позже.' });
+        }
+        return;
+      }
       if (url.pathname === '/api/resources' || url.pathname === '/api/download') {
         if (!configured) { sendJson(res, 503, { error: 'Общая папка не подключена. Обратитесь к администратору приложения.', code: configuredUrl ? 'source_invalid' : 'source_not_configured' }); return; }
         const path = url.searchParams.get('path') || '/';
@@ -108,9 +132,35 @@ export function createServer() {
       sendJson(res, error.code === 'ENOENT' ? 404 : error.status || 502, { error: error.code === 'ENOENT' ? 'Страница не найдена.' : error.message || 'Сервис временно недоступен.' });
     }
   });
+  server.preparedService = prepared;
+  server.preparedStore = store;
+  server.on('close', () => { Promise.resolve(store?.close?.()).catch(() => {}); });
+  return server;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (Boolean(process.env.APP_USER) !== Boolean(process.env.APP_PASSWORD)) throw new Error('APP_USER и APP_PASSWORD нужно задавать вместе.');
   const port = Number(process.env.PORT) || 3000;
-  createServer().listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}`));
+  const server = createServer();
+  let connected = false;
+  const checkDb = async () => {
+    try {
+      await server.preparedStore.ready();
+      if (!connected) console.log('DB connected');
+      connected = true;
+      return true;
+    } catch (error) { connected = false; console.error('DB error:', error.message); }
+    return false;
+  };
+  if (server.preparedStore) await checkDb();
+  else console.error('DB error: задайте DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASSWORD.');
+  server.listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}`));
+  if (server.preparedStore && server.preparedService) {
+    const sync = async () => {
+      if (!await checkDb()) return;
+      try { await server.preparedService.syncAll(); }
+      catch (error) { console.warn('Обновление данных:', error.message); }
+    };
+    setTimeout(sync, 5000).unref();
+    setInterval(sync, 15 * 60 * 1000).unref();
+  }
 }

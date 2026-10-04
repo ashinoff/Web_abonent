@@ -1,15 +1,39 @@
-/* SheetJS runs away from the interface thread; workbooks never leave the device. */
-importScripts('./vendor/xlsx.full.min.js');
+/* Prepared server packages skip SheetJS entirely; local Excel stays supported. */
 const core = import('./core.js');
 let sourceSheets = [], sheets = [], index = null, analysisService = null, monthlyModel = null;
+let xlsxLoaded = false;
+function ensureXLSX() { if (!xlsxLoaded) { importScripts('./vendor/xlsx.full.min.js'); xlsxLoaded = true; } }
 self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
+    if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
+      const { fetchPrepared } = await import('./prepared-cache.js');
+      const { data: pack, offline, cached, savedAt } = await fetchPrepared(payload);
+      if (action === 'loadPreparedRegistry') {
+        const { unpackRegistry } = await import('./prepared-data.js');
+        const { buildIndex } = await core;
+        sourceSheets = []; sheets = unpackRegistry(pack); index = buildIndex(sheets);
+        self.postMessage({ id, result: { count: index.records.length, notesCount: index.notes.length, hasNotesColumn: index.hasNotesColumn,
+          skipped: pack.skipped || [], sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })), offline, cached, savedAt } }); return;
+      }
+      if (action === 'loadPreparedMonthly') {
+        const { unpackMonthly } = await import('./prepared-data.js');
+        const { indexMonthly } = await import('./monthly.js');
+        const { createAnalysisService } = await import('./analysis-service.js');
+        analysisService = null; monthlyModel = indexMonthly(unpackMonthly(pack));
+        analysisService = createAnalysisService(monthlyModel, payload.records);
+        self.postMessage({ id, result: { ...analysisService.summary, offline, cached, savedAt } }); return;
+      }
+      if (pack.role !== 'incoming') throw new Error('Неверный пакет приёма.');
+      self.postMessage({ id, result: { sheets: pack.sheets, offline, cached, savedAt } }); return;
+    }
     if (action === 'checkIncoming') {
+      ensureXLSX();
       const { inspectExcelWorkbook } = await import('./workbook-check.js');
       self.postMessage({ id, result: inspectExcelWorkbook(payload.buffer, XLSX) }); return;
     }
     if (action === 'loadMonthly' || action === 'demoMonthly') {
+      if (action === 'loadMonthly') ensureXLSX();
       analysisService = null; monthlyModel = null;
       const { readMonthlyWorkbook, indexMonthly } = await import('./monthly.js');
       const { createAnalysisService } = await import('./analysis-service.js');
@@ -36,6 +60,7 @@ self.onmessage = async ({ data }) => {
       sourceSheets = []; sheets = []; index = null;
       if (action === 'demo') sourceSheets = payload.sheets;
       else {
+        ensureXLSX();
         const book = XLSX.read(payload.buffer, { type: 'array', dense: true, cellText: true, cellDates: false, cellHTML: false, cellFormula: false, cellNF: true, sheetRows: 100002 });
         payload.buffer = null;
         for (const name of book.SheetNames) {

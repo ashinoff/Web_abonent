@@ -265,3 +265,5 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .year-readings strong:before{content:'';display:inline-block;width:8px;height:8px;background:var(--year-color);border-radius:50%;margin-right:7px}
 @media(max-width:700px){.header-actions{gap:12px}.header-actions .settings-button{width:40px;padding:0;justify-content:center}.header-actions .settings-button span{display:none}.header-inner{gap:10px}.notification-button{width:40px;height:40px;flex-basis:40px}}
 @media(prefers-reduced-motion:reduce){.chart-mode button{transition:none}}
+.offline-readiness { margin: 0 0 1rem; color: #31536a; font-size: .83rem; }
+.offline-readiness[data-ready="true"] { color: #176c4a; }

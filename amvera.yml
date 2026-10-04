@@ -3,8 +3,6 @@ meta:
   toolchain:
     name: npm
     version: 22
-build:
-  skip: true
 run:
   scriptName: server.mjs
   containerPort: 3000
