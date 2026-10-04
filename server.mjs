@@ -151,7 +151,7 @@ export function createServer(options = {}) {
           if (res.destroyed) return;
           const revision = Buffer.from(result.revision).toString('base64url');
           if (req.headers['if-none-match'] === `"${revision}"`) {
-            res.writeHead(304, { 'ETag': `"${revision}"`, 'Cache-Control': 'no-store' }); res.end(); return;
+            res.writeHead(304, { 'ETag': `"${revision}"`, 'Cache-Control': 'no-store', 'X-Prepared-Stale': result.stale ? '1' : '0' }); res.end(); return;
           }
           res.writeHead(200, { 'Content-Type': types['.json'], 'Content-Encoding': 'gzip', 'Cache-Control': 'no-store', 'ETag': `"${revision}"`, 'X-Prepared-Revision': revision, 'X-Prepared-Stale': result.stale ? '1' : '0' });
           if (req.method === 'HEAD') res.end(); else res.end(result.payload);

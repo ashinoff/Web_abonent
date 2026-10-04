@@ -1,9 +1,9 @@
-const version = 'abonent-shell-2026-10-04-v6';
+const version = 'abonent-shell-2026-10-04-v7';
 const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./worker.js',
   './core.js','./monthly.js','./analysis-service.js','./analysis-engine.js','./analysis-settings.js',
   './analysis-tuning.js','./analysis-ui.js','./analysis-help.js','./diagnostics-ui.js','./analysis-chart.js','./chart-years.js','./demo.js',
   './download-buffer.js','./gestures.js','./notes-ui.js','./readings.js','./record-sections.js',
-  './source-files.js','./source.js','./workbook-check.js','./prepared-data.js','./prepared-cache.js','./load-map.js',
+  './source-files.js','./source.js','./workbook-check.js','./prepared-data.js','./prepared-cache.js','./load-map.js','./load-session.js','./offline-copies.js',
   './vendor/xlsx.full.min.js','./favicon.svg','./rosseti-logo.svg'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(version).then(cache => cache.addAll(shell)).then(() => self.skipWaiting()));

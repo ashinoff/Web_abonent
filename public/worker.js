@@ -8,13 +8,13 @@ self.onmessage = async ({ data }) => {
   try {
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
       const { fetchPrepared } = await import('./prepared-cache.js');
-      const { data: pack, offline, cached, savedAt } = await fetchPrepared(payload);
+      const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');
         const { buildIndex } = await core;
         sourceSheets = []; sheets = unpackRegistry(pack); index = buildIndex(sheets);
         self.postMessage({ id, result: { count: index.records.length, notesCount: index.notes.length, hasNotesColumn: index.hasNotesColumn,
-          skipped: pack.skipped || [], sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })), offline, cached, savedAt } }); return;
+          skipped: pack.skipped || [], sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })), ...cacheInfo } }); return;
       }
       if (action === 'loadPreparedMonthly') {
         const { unpackMonthly } = await import('./prepared-data.js');
@@ -22,10 +22,10 @@ self.onmessage = async ({ data }) => {
         const { createAnalysisService } = await import('./analysis-service.js');
         analysisService = null; monthlyModel = indexMonthly(unpackMonthly(pack));
         analysisService = createAnalysisService(monthlyModel, payload.records);
-        self.postMessage({ id, result: { ...analysisService.summary, offline, cached, savedAt } }); return;
+        self.postMessage({ id, result: { ...analysisService.summary, ...cacheInfo } }); return;
       }
       if (pack.role !== 'incoming') throw new Error('Неверный пакет приёма.');
-      self.postMessage({ id, result: { sheets: pack.sheets, offline, cached, savedAt } }); return;
+      self.postMessage({ id, result: { sheets: pack.sheets, ...cacheInfo } }); return;
     }
     if (action === 'checkIncoming') {
       ensureXLSX();

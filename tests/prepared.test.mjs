@@ -110,6 +110,7 @@ test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplic
     const before304 = fullReads;
     const repeated = await realFetch(url, { headers: { 'If-None-Match': revision } });
     assert.equal(repeated.status,304); assert.equal(await repeated.text(),'');
+    assert.equal(repeated.headers.get('x-prepared-stale'),'0');
     assert.equal(fullReads,before304);
     assert.equal(metadata,2); // One file metadata lookup and one download link; cached reads use DB only.
   } finally {
