@@ -8,6 +8,7 @@ import { groupRecordFields } from './record-sections.js';
 import { initAnalysisUI } from './analysis-ui.js';
 import { initNotesUI } from './notes-ui.js';
 import { calculateReading } from './readings.js';
+import { initLoadMap } from './load-map.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -114,21 +115,23 @@ function renderIndicators() {
     offline.textContent = ready ? `Данные ${selectedRes.name} сохранены на телефоне · доступны без интернета` :
       'Подготовка офлайн-доступа: дождитесь загрузки реестра, ПО и приёма при устойчивой связи.';
   }
-  const diskText = diskState === 'connected' ? 'Общая папка доступна' : diskState === 'checking' ? 'Проверяем подключение…' : sourceState === 'missing' ? 'Общая папка не подключена' : 'Не удалось прочитать папку';
+  const cachedOffline = summary?.offline || consumptionInfo?.offline || incomingInfo?.offline;
+  const baseState = sourceState === 'loading' ? 'checking' : !config.prepared ? 'idle' : !navigator.onLine || cachedOffline ? 'off' : config.databaseConnected || summary?.cached ? 'on' : 'off';
+  const baseText = baseState === 'checking' ? 'Проверяем подключение к базе…' : !config.prepared ? 'База не подключена · доступен прежний режим Excel' : baseState === 'on' ? 'Подготовленные данные базы доступны' : !navigator.onLine || cachedOffline ? 'База недоступна · открыты сохранённые данные' : 'Нет связи с базой данных';
   const registryText = registryState === 'ready' || summary ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : pending ? 'Подтвердите столбцы в настройках' : registryError || (registryState === 'missing' ? 'Файл реестра не найден' : registryState === 'error' ? 'Реестр не загружен' : 'Сначала выберите РЭС');
   const consumptionText = consumptionState === 'ready' ? 'Готов к анализу: ' + (consumptionFile?.name || 'Демонстрация') : consumptionState === 'checking' ? `Читаем «${consumptionFile?.name || CONSUMPTION_NAME}»…` : consumptionState === 'missing' ? `Файл «${CONSUMPTION_NAME}» не найден` : consumptionState === 'error' ? consumptionError || 'Не удалось прочитать файл потребления' : 'Сначала выберите РЭС';
   const incomingText = incomingState === 'ready' ? 'Прочитан: ' + incomingFile.name + ' · баланс ожидает формат' : incomingState === 'checking' ? 'Читаем файл приёма…' : incomingState === 'missing' ? `Файл «${INCOMING_NAME}» не найден` : incomingState === 'error' ? incomingError || 'Не удалось прочитать приём' : 'Сначала выберите РЭС';
   for (const [name, state, label] of [
-    ['disk', diskState === 'connected' ? 'on' : diskState === 'checking' ? 'checking' : 'off', diskText],
+    ['base', baseState, baseText],
     ['registry', registryState === 'ready' ? 'on' : registryState === 'checking' ? 'checking' : registryState === 'idle' ? 'idle' : 'off', registryText],
     ['incoming', incomingState === 'ready' ? 'on' : incomingState === 'checking' ? 'checking' : incomingState === 'idle' ? 'idle' : 'off', incomingText],
     ['consumption', consumptionState === 'ready' ? 'on' : consumptionState === 'checking' ? 'checking' : consumptionState === 'idle' ? 'idle' : 'off', consumptionText],
   ]) {
     const indicator = $('#' + name + '-indicator');
     indicator.dataset.state = state; indicator.title = label;
-    $('#' + name + '-indicator-label').textContent = label;
+    indicator.setAttribute('aria-label', `${{ base:'Чтение базы',registry:'Реестр',consumption:'Потребление',incoming:'Приём' }[name]}: ${label}`);
   }
-  $('#disk-detail').textContent = diskText;
+  $('#base-detail').textContent = baseText;
   $('#enterprise-detail').textContent = selectedFolder?.name || 'Не выбрано';
   $('#res-detail').textContent = selectedRes?.name || 'Не выбрана';
   $('#contour-open').disabled = busy || consumptionState !== 'ready';
@@ -176,10 +179,11 @@ function validateRoot(value) {
   try { const u = new URL(value); if (u.protocol === 'https:' && !u.username && !u.password && !u.port && ['disk.yandex.ru', 'disk.yandex.com', 'disk.yandex.net', 'disk.360.yandex.ru', 'yadi.sk'].includes(u.hostname) && /^\/(d|i)\/[\w-]+\/?$/.test(u.pathname)) return `${u.origin}${u.pathname}`; } catch {}
   throw new Error('Адрес общей папки настроен некорректно. Обратитесь к администратору приложения.');
 }
-async function apiRequest(action, path = '/', offset = 0) {
+async function apiRequest(action, path = '/', offset = 0, legacy = false) {
   if (proxy && !navigator.onLine) throw new Error('Нет подключения к сети.');
   const base = config.apiBase || (proxy ? new URL('./api/', location.href).href : 'https://cloud-api.yandex.net/v1/disk/public/');
-  const endpoint = proxy || config.apiBase ? action : action === 'download' ? 'resources/download' : 'resources';
+  const directory = action === 'resources' && proxy && config.prepared && config.databaseConnected && !legacy;
+  const endpoint = directory ? 'directory' : proxy || config.apiBase ? action : action === 'download' ? 'resources/download' : 'resources';
   const url = new URL(endpoint, base.endsWith('/') ? base : base + '/');
   if (!proxy && !config.apiBase) url.searchParams.set('public_key', validateRoot(rootUrl()));
   url.searchParams.set('path', path);
@@ -187,6 +191,7 @@ async function apiRequest(action, path = '/', offset = 0) {
   let response;
   try { response = await fetch(url, { signal: AbortSignal.timeout(action === 'download' ? 90000 : 25000), credentials: 'same-origin' }); }
   catch { throw new Error(proxy ? 'Нет ответа от Яндекс Диска. Проверьте соединение и повторите.' : 'Браузер не смог получить файл с Яндекс Диска. Откройте Excel с устройства или используйте версию на Амвере.'); }
+  if (directory && [404,502,503].includes(response.status)) return apiRequest(action,path,offset,true);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const text = { 404: 'Папка не найдена. Проверьте ссылку и доступ.', 403: 'Доступ к файлу ограничен. Разрешите скачивание по ссылке.', 429: 'Слишком много запросов к Диску. Повторите позже.', 413: 'Файл превышает 40 МБ.' };
@@ -194,12 +199,12 @@ async function apiRequest(action, path = '/', offset = 0) {
   }
   return response;
 }
-async function listFolder(path) {
+async function listFolder(path, legacy = false) {
   const key = 'abonent.folder.v1:' + rootUrl() + ':' + path;
   try {
     let all = [], offset = 0;
     while (true) {
-      const data = await (await apiRequest('resources', path, offset)).json();
+      const data = await (await apiRequest('resources', path, offset, legacy)).json();
       if (data.type !== 'dir') throw new Error('Не удалось прочитать каталог: по выбранному пути находится файл.');
       const part = data._embedded?.items || []; all.push(...part); offset += part.length;
       if (!part.length || offset >= (data._embedded?.total ?? offset)) break;
@@ -342,6 +347,9 @@ async function openRes(res, { keepSettings = false } = {}) {
     setBusy(true, 'Читаем файлы РЭС…');
     filesState = 'loading'; renderIndicators();
     folderItems = (await listFolder(res.path)).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    if (proxy && config.prepared && Object.values(prefs.fileChoices || {}).some(choice => choice?.path && !folderItems.some(item => item.path === choice.path))) {
+      folderItems = (await listFolder(res.path, true)).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    }
     filesState = 'ready'; diskState = directoryOffline ? 'disconnected' : 'connected';
     consumptionFile = findSource(folderItems, 'consumption', prefs.fileChoices); consumptionState = consumptionFile ? 'checking' : 'missing';
     selectedFile = findSource(folderItems, 'registry', prefs.fileChoices);
@@ -693,7 +701,8 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
   } catch (error) { message('#form-message', error.message); }
 }
 const notesUI = initNotesUI({ request: rpc, openDialog, openRecord });
-const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings });
+const loadMap = initLoadMap(rootUrl);
+const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings, onMapOpen: loadMap.refresh });
 $('#record-body').addEventListener('click', e => { if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName }); });
 $('#contour-open').addEventListener('click', analysisUI.openTPs);
 $('#tp-analyze').addEventListener('click', () => { if (tpSelection) analysisUI.openTP(tpSelection.name); });

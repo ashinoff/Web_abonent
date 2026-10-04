@@ -28,6 +28,11 @@
     <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 3v17h17M8 15l4-5 4 2 5-7"/></symbol>
     <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 11 6-6 6 6M12 5v14"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m10 5-7 7 7 7M3 12h18"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-registry" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="i-consumption" viewBox="0 0 24 24"><path d="M3 4v16h18M6 16l4-5 4 2 5-7"/><circle cx="10" cy="11" r="1"/><circle cx="19" cy="6" r="1"/></symbol>
+    <symbol id="i-incoming" viewBox="0 0 24 24"><path d="M12 3v11m-4-4 4 4 4-4M4 16v4h16v-4"/></symbol>
+    <symbol id="i-load-map" viewBox="0 0 24 24"><path d="M3 5h7l2 2h9v13H3zM7 12h3M7 16h3M14 12h4M14 16h4"/></symbol>
   </svg>
   <header class="topbar">
     <div class="header-inner">
@@ -36,11 +41,11 @@
       <div class="header-actions"><button type="button" class="notification-button" id="notes-open" aria-label="Примечания: сначала загрузите реестр" aria-haspopup="dialog" disabled><svg aria-hidden="true"><use href="#i-bell"/></svg><span class="notification-badge" id="notes-badge" aria-hidden="true" hidden></span></button>
       <button class="settings-button" id="settings-open" aria-label="Настройки"><svg><use href="#i-settings"/></svg><span>Настройки</span></button></div>
     </div>
-    <div class="source-indicators" aria-label="Источники данных">
-      <button type="button" class="source-indicator" id="disk-indicator" data-state="checking" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Яндекс</span><span class="sr-only" id="disk-indicator-label">Проверяем подключение</span></button>
-      <button type="button" class="source-indicator" id="registry-indicator" data-state="idle" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Реестр</span><span class="sr-only" id="registry-indicator-label">РЭС не выбрана</span></button>
-      <button type="button" class="source-indicator" id="consumption-indicator" data-state="idle" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Потребление</span><span class="sr-only" id="consumption-indicator-label">РЭС не выбрана</span></button>
-      <button type="button" class="source-indicator" id="incoming-indicator" data-state="idle" data-open-settings><i class="status-light" aria-hidden="true"></i><span>Приём</span><span class="sr-only" id="incoming-indicator-label">РЭС не выбрана</span></button>
+    <div class="source-indicators" aria-label="Состояние данных">
+      <button type="button" class="source-indicator" id="base-indicator" data-state="checking" data-open-settings aria-label="Чтение базы: проверяем подключение"><svg aria-hidden="true"><use href="#i-database"/></svg><i class="status-light" aria-hidden="true"></i></button>
+      <button type="button" class="source-indicator" id="registry-indicator" data-state="idle" data-open-settings aria-label="Реестр: РЭС не выбрана"><svg aria-hidden="true"><use href="#i-registry"/></svg><i class="status-light" aria-hidden="true"></i></button>
+      <button type="button" class="source-indicator" id="consumption-indicator" data-state="idle" data-open-settings aria-label="Потребление: РЭС не выбрана"><svg aria-hidden="true"><use href="#i-consumption"/></svg><i class="status-light" aria-hidden="true"></i></button>
+      <button type="button" class="source-indicator" id="incoming-indicator" data-state="idle" data-open-settings aria-label="Приём: РЭС не выбрана"><svg aria-hidden="true"><use href="#i-incoming"/></svg><i class="status-light" aria-hidden="true"></i></button>
     </div>
   </header>
   <main class="workspace">
@@ -80,17 +85,17 @@
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog full-screen-dialog" aria-labelledby="settings-title">
     <div class="dialog-header"><div><span class="eyebrow">РАБОЧАЯ ОБЛАСТЬ</span><h2 id="settings-title">Настройки</h2></div><button class="icon-button close-dialog" aria-label="Закрыть настройки"><svg><use href="#i-close"/></svg></button></div>
-    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек"><button type="button" id="connection-tab" role="tab" aria-selected="true" aria-controls="connection-settings" data-settings-tab="connection">Подключение</button><button type="button" id="analysis-tab" role="tab" aria-selected="false" aria-controls="analysis-settings" tabindex="-1" data-settings-tab="analysis">Анализ</button></div>
+    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек"><button type="button" id="connection-tab" role="tab" aria-selected="true" aria-controls="connection-settings" data-settings-tab="connection">Подключение</button><button type="button" id="load-map-tab" role="tab" aria-selected="false" aria-controls="load-map-settings" tabindex="-1" data-settings-tab="load-map"><svg aria-hidden="true"><use href="#i-load-map"/></svg>Карта загрузки</button><button type="button" id="analysis-tab" role="tab" aria-selected="false" aria-controls="analysis-settings" tabindex="-1" data-settings-tab="analysis">Анализ</button></div>
     <div class="dialog-body"><div id="connection-settings" role="tabpanel" aria-labelledby="connection-tab">
-      <section class="setting-section"><h3>Источники данных</h3><dl class="source-details"><div><dt>Яндекс Диск</dt><dd id="disk-detail">Проверяем подключение…</dd></div><div><dt>Предприятие</dt><dd id="enterprise-detail">Не выбрано</dd></div><div><dt>РЭС</dt><dd id="res-detail">Не выбрана</dd></div></dl><p id="source-setup-message" class="hint" role="status"></p><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Проверить подключение и обновить</button></section>
+      <section class="setting-section"><h3>Источники данных</h3><dl class="source-details"><div><dt>База данных</dt><dd id="base-detail">Проверяем подключение…</dd></div><div><dt>Предприятие</dt><dd id="enterprise-detail">Не выбрано</dd></div><div><dt>РЭС</dt><dd id="res-detail">Не выбрана</dd></div></dl><p id="source-setup-message" class="hint" role="status"></p><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Проверить подключение и обновить</button></section>
       <section class="setting-section" id="source-files" aria-label="Просмотр файлов"></section>
       <section class="setting-section"><h3>Автоматический выбор</h3><p class="hint">В папке РЭС ищем «Расширенный список» — реестр, «ПО» или «ПО по месячно» — потребление, «прием» — технический учёт. Подходят XLS и XLSX, регистр букв не важен. Из подходящих файлов читаем самый новый; при одинаковой дате — XLSX.</p><p class="hint">Если файл называется иначе или не прочитан, выберите его вручную из папки выше. Ручной выбор сохраняется для текущей РЭС. Остальные файлы не скачиваются.</p></section>
       <div class="setting-section" id="mapping-section" hidden><h3>Проверьте столбцы</h3><p class="hint">Убедитесь, что приложение правильно определило номера ПУ и лицевых счетов.</p><div id="mapping-fields"></div><div id="mapping-warning" class="notice" hidden></div><button id="confirm-mapping" class="primary full-width">Использовать реестр</button></div>
       <div id="settings-message" class="form-message" role="status" hidden></div>
       <div class="local-source"><div><strong>Excel на устройстве</strong><p class="hint">Открыть «Расширенный список.xls» или «Расширенный список.xlsx».</p></div><label class="secondary file-upload"><svg><use href="#i-file"/></svg>Выбрать файл<input id="local-file" type="file" accept=".xls,.xlsx" class="sr-only"></label></div>
       <div class="local-source"><div><strong>Потребление на устройстве</strong><p class="hint">После реестра откройте «ПО.xls» или «ПО.xlsx» той же РЭС. Полное имя «ПО по месячно» тоже подходит.</p></div><label class="secondary file-upload">Выбрать файл<input id="local-monthly" type="file" accept=".xls,.xlsx" class="sr-only"></label></div>
-      <p class="privacy-note">Книги обрабатываются на вашем устройстве. Запоминаются только выбранные предприятие, РЭС и настройки. Данные потребителей не сохраняются в браузере.</p>
-    </div><div id="analysis-settings" role="tabpanel" aria-labelledby="analysis-tab" hidden></div></div>
+      <p class="privacy-note">В режиме базы подготовленные данные выбранной РЭС сохраняются на устройстве для работы без сети. Файлы Excel, выбранные с устройства, обрабатываются локально.</p>
+    </div><div id="load-map-settings" role="tabpanel" aria-labelledby="load-map-tab" hidden><div class="load-map-heading"><div><h3>Карта загрузки</h3><p class="hint">Предприятия и РЭС, которые сервер уже проверил. Статусы показывают подготовку файлов в базе.</p></div><button id="load-map-refresh" type="button" class="secondary"><svg aria-hidden="true"><use href="#i-refresh"/></svg>Обновить</button></div><p class="hint" id="load-map-updated" role="status"></p><div id="load-map-list"></div></div><div id="analysis-settings" role="tabpanel" aria-labelledby="analysis-tab" hidden></div></div>
   </dialog>
   <dialog id="tp-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="tp-title">
     <div class="dialog-header tp-header"><div class="tp-header-top"><button type="button" class="icon-button tp-back" id="tp-back" aria-label="К выбору ТП" hidden><svg aria-hidden="true"><use href="#i-back"/></svg></button><div class="tp-header-copy"><h2 id="tp-title">Реестр ТП</h2><p class="registry-meta" id="tp-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть реестр ТП"><svg><use href="#i-close"/></svg></button></div><label class="sr-only" id="tp-filter-label" for="tp-filter">Найти ТП в списке</label><div class="search-input-wrap tp-filter-wrap"><svg><use href="#i-search"/></svg><input id="tp-filter" type="search" placeholder="Найти ТП в списке" autocomplete="off" maxlength="200"></div></div>

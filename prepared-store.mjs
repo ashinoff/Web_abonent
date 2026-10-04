@@ -17,7 +17,12 @@ export function createPreparedStore(env = process.env) {
       source text NOT NULL, path text NOT NULL, role text NOT NULL, revision text NOT NULL,
       data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (source, path, role)
-    )`).catch(error => { initialized = null; throw error; });
+    )`).then(() => pool.query(`CREATE TABLE IF NOT EXISTS abonent_folder_status (
+      source text NOT NULL, res_path text NOT NULL, enterprise_path text NOT NULL,
+      enterprise_name text NOT NULL, res_name text NOT NULL,
+      statuses jsonb NOT NULL, checked_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (source, res_path)
+    )`)).catch(error => { initialized = null; throw error; });
     await initialized;
   }
   return {
@@ -27,11 +32,36 @@ export function createPreparedStore(env = process.env) {
       const { rows } = await pool.query('SELECT revision, data, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
       return rows[0] || null;
     },
+    async getRevision(source, path, role) {
+      await ready();
+      const { rows } = await pool.query('SELECT revision FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
+      return rows[0]?.revision || null;
+    },
     async put(source, path, role, revision, data) {
       await ready();
       await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data) VALUES ($1,$2,$3,$4,$5)
         ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,updated_at=now()`,
       [source, path, role, revision, data]);
+    },
+    async putFolder(source, folder, statuses) {
+      await ready();
+      await pool.query(`INSERT INTO abonent_folder_status
+        (source,res_path,enterprise_path,enterprise_name,res_name,statuses)
+        VALUES ($1,$2,$3,$4,$5,$6)
+        ON CONFLICT (source,res_path) DO UPDATE SET enterprise_path=EXCLUDED.enterprise_path,
+        enterprise_name=EXCLUDED.enterprise_name,res_name=EXCLUDED.res_name,
+        statuses=EXCLUDED.statuses,checked_at=now()`,
+      [source, folder.path, folder.enterprisePath, folder.enterpriseName, folder.name, statuses]);
+    },
+    async listFolders(source) {
+      await ready();
+      const { rows } = await pool.query(`SELECT enterprise_path,enterprise_name,res_path,res_name,statuses,checked_at
+        FROM abonent_folder_status WHERE source=$1 ORDER BY enterprise_name,res_name`, [source]);
+      return rows;
+    },
+    async pruneFolders(source, paths) {
+      await ready();
+      await pool.query('DELETE FROM abonent_folder_status WHERE source=$1 AND NOT (res_path = ANY($2::text[]))', [source, paths]);
     },
     close: () => pool?.end(),
   };

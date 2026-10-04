@@ -267,3 +267,42 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 @media(prefers-reduced-motion:reduce){.chart-mode button{transition:none}}
 .offline-readiness { margin: 0 0 1rem; color: #31536a; font-size: .83rem; }
 .offline-readiness[data-ready="true"] { color: #176c4a; }
+
+/* Compact source glyphs and the server's per-folder loading map. */
+.source-indicators{gap:10px}
+.source-indicator{position:relative;width:46px;height:38px;min-height:38px;padding:0;justify-content:center;border-radius:11px}
+.source-indicator>svg{width:21px;height:21px;color:#dbe9fa;stroke-width:1.65}
+.source-indicator .status-light{position:absolute;right:5px;bottom:5px;width:7px;height:7px;flex-basis:7px;border:1px solid #112c4e}
+.source-indicator[data-state="idle"]>svg{color:#9cacc0}
+.source-indicator[data-state="on"]>svg{color:#ecfff7}
+.settings-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:6px;line-height:1.25}
+.settings-tabs button svg{width:16px;height:16px}
+.load-map-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.load-map-heading h3{font-size:18px;margin:1px 0 7px}
+.load-map-heading .hint{font-size:12px;margin:0}
+.load-map-heading .secondary{display:inline-flex;align-items:center;gap:5px;min-height:38px;padding:7px 10px;white-space:nowrap;font-size:12px}
+.load-map-heading .secondary svg{width:16px;height:16px}
+#load-map-updated{margin:10px 0 15px;font-size:11px}
+#load-map-list{display:grid;gap:11px}
+.load-map-enterprise{border:1px solid #dce5ee;background:#fff;border-radius:12px;overflow:hidden}
+.load-map-enterprise>summary{display:flex;align-items:center;gap:10px;min-height:58px;padding:12px 15px;cursor:pointer;list-style:none}
+.load-map-enterprise>summary::-webkit-details-marker{display:none}
+.load-map-enterprise>summary>svg:first-child{width:20px;height:20px;color:#6285a8}
+.load-map-enterprise>summary strong{flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px}
+.load-map-enterprise>summary small{font-size:11px;color:#8090a3;white-space:nowrap}
+.load-map-enterprise .load-map-chevron{width:14px;height:14px;color:#8090a3;transition:transform .2s}
+.load-map-enterprise[open] .load-map-chevron{transform:rotate(90deg)}
+.load-map-res-list{background:#f6f9fc;padding:10px;display:grid;gap:9px;border-top:1px solid #e5ebf2}
+.load-map-res{background:#fff;border:1px solid #e3eaf1;border-radius:10px;padding:12px}
+.load-map-res-title{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+.load-map-res-title strong{font-size:13px;overflow-wrap:anywhere}
+.load-map-res-title small{color:#7288a0;font-size:10px;white-space:nowrap}
+.load-map-statuses{display:flex;flex-wrap:wrap;gap:6px}
+.load-map-status{display:inline-flex;align-items:center;gap:5px;padding:5px 7px;background:#edf4f0;color:#3e755a;border-radius:7px;font-size:10px;line-height:1.3}
+.load-map-status i{width:6px;height:6px;background:currentColor;border-radius:50%}
+.load-map-status[data-state="missing"]{background:#edf1f5;color:#718095}
+.load-map-status[data-state="stale"]{background:#fff1df;color:#99703a}
+.load-map-status[data-state="error"]{background:#fae9e7;color:#aa5e55}
+.load-map-date{display:block;color:#8a98a8;font-size:10px;margin-top:9px}
+.load-map-empty{padding:27px 18px;text-align:center;color:#71849c;background:#f5f8fb;border-radius:12px;font-size:13px;line-height:1.6}
+@media(max-width:700px){.source-indicators{gap:10px;justify-content:flex-start}.source-indicator{min-width:46px;gap:0;padding:0}.settings-tabs button{font-size:12px;padding:8px 5px}.settings-tabs button svg{display:none}}

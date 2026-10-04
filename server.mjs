@@ -19,6 +19,24 @@ export function validPublicUrl(value) {
 export function validDownloadUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru', 'yandex.net', 'yandex.com', 'yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith(`.${h}`)); } catch { return false; }
 }
+function preparedDirectory(folders, path, offset) {
+  let items;
+  if (path === '/') items = [...new Map(folders.map(f => [f.enterprise_path,
+    { type:'dir', path:f.enterprise_path, name:f.enterprise_name }])).values()];
+  else if (folders.some(f => f.enterprise_path === path)) items = folders.filter(f => f.enterprise_path === path)
+    .map(f => ({ type:'dir', path:f.res_path, name:f.res_name }));
+  else {
+    const folder = folders.find(f => f.res_path === path);
+    if (folder) items = [...new Map(Object.values(folder.statuses || {}).filter(s => s.path)
+      .map(s => [s.path,{ type:'file',path:s.path,name:s.file,size:s.size,modified:s.modified }])).values()];
+    else {
+      const file = folders.flatMap(f => Object.values(f.statuses || {})).find(s => s.path === path);
+      return file ? { type:'file', path, name:file.file, size:file.size, modified:file.modified } : null;
+    }
+  }
+  items.sort((a,b) => a.name.localeCompare(b.name,'ru'));
+  return { type:'dir',path,_embedded:{items:items.slice(offset,offset+100),total:items.length} };
+}
 function sendJson(res, status, value) { res.writeHead(status, { 'Content-Type': types['.json'], 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); }
 async function yandex(url) {
   const response = await fetch(url, { signal: AbortSignal.timeout(25000), redirect: 'error' });
@@ -52,6 +70,7 @@ export function createServer(options = {}) {
   }
   const store = options.preparedStore || createPreparedStore();
   const prepared = store && createPreparedService({ source: key, store, yandex });
+  let databaseConnected = Boolean(store && !store.ready);
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -61,14 +80,28 @@ export function createServer(options = {}) {
     if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: 'Метод не поддерживается.' }); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared) }); return; }
+      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected }); return; }
+      if (url.pathname === '/api/load-map') {
+        if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Карта загрузки доступна после подключения базы данных.' }); return; }
+        sendJson(res, 200, { folders: await store.listFolders(key) }); return;
+      }
+      if (url.pathname === '/api/directory') {
+        if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Каталог базы ещё не готов.' }); return; }
+        const path = url.searchParams.get('path') || '/';
+        if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096) { sendJson(res, 400, { error: 'Некорректный путь.' }); return; }
+        const folders = await store.listFolders(key);
+        const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get('offset')) || 0));
+        const data = folders.length && preparedDirectory(folders,path,offset);
+        if (!data) { sendJson(res, folders.length ? 404 : 503, { error: 'Каталог базы ещё не готов для этой папки.' }); return; }
+        sendJson(res, 200, data); return;
+      }
       if (url.pathname === '/api/prepared') {
         if (!prepared) { sendJson(res, 503, { error: 'Серверная подготовка ещё не подключена.' }); return; }
         const path = url.searchParams.get('path') || '';
         const role = url.searchParams.get('role') || '';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !['registry','consumption','incoming'].includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
         try {
-          const result = await prepared.load(path, role);
+          const result = await prepared.fromDatabase(path, role, req.headers['if-none-match']);
           if (res.destroyed) return;
           const revision = Buffer.from(result.revision).toString('base64url');
           if (req.headers['if-none-match'] === `"${revision}"`) {
@@ -134,6 +167,7 @@ export function createServer(options = {}) {
   });
   server.preparedService = prepared;
   server.preparedStore = store;
+  server.setDatabaseStatus = value => { databaseConnected = Boolean(value); };
   server.on('close', () => { Promise.resolve(store?.close?.()).catch(() => {}); });
   return server;
 }
@@ -147,8 +181,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await server.preparedStore.ready();
       if (!connected) console.log('DB connected');
       connected = true;
+      server.setDatabaseStatus(true);
       return true;
-    } catch (error) { connected = false; console.error('DB error:', error.message); }
+    } catch (error) { connected = false; server.setDatabaseStatus(false); console.error('DB error:', error.message); }
     return false;
   };
   if (server.preparedStore) await checkDb();

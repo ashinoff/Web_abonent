@@ -76,17 +76,18 @@ test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplic
   const prev = process.env.YANDEX_PUBLIC_URL;
   process.env.YANDEX_PUBLIC_URL = 'https://disk.yandex.ru/d/PreparedTest';
   const workbook = registry(), entries = new Map(), realFetch = globalThis.fetch;
-  let downloads = 0;
+  let downloads = 0, metadata = 0, fullReads = 0;
   t.mock.method(globalThis, 'fetch', async (input, options) => {
     const url = new URL(String(input));
-    if (url.hostname === 'cloud-api.yandex.net') return Response.json(url.pathname.endsWith('/download')
+    if (url.hostname === 'cloud-api.yandex.net') { metadata++; return Response.json(url.pathname.endsWith('/download')
       ? { href: 'https://downloader.disk.yandex.ru/registry' }
-      : { type: 'file', name: 'Расширенный список.xlsx', size: workbook.length, modified: '2026-10-04' });
+      : { type: 'file', name: 'Расширенный список.xlsx', size: workbook.length, modified: '2026-10-04' }); }
     if (url.hostname === 'downloader.disk.yandex.ru') { downloads++; return new Response(workbook, { headers: { 'content-length': String(workbook.length) } }); }
     return realFetch(input, options);
   });
   const preparedStore = {
-    get: async (source,path,role) => entries.get(JSON.stringify([source,path,role])),
+    get: async (source,path,role) => { fullReads++; return entries.get(JSON.stringify([source,path,role])); },
+    getRevision: async (source,path,role) => entries.get(JSON.stringify([source,path,role]))?.revision,
     put: async (source,path,role,revision,data) => entries.set(JSON.stringify([source,path,role]),{revision,data}),
   };
   const server = createServer({ preparedStore });
@@ -103,8 +104,11 @@ test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplic
     assert.equal(downloads,1);
     const unchanged = await realFetch(url); assert.equal(unchanged.headers.get('x-prepared-stale'),'0');
     const revision = unchanged.headers.get('etag');
+    const before304 = fullReads;
     const repeated = await realFetch(url, { headers: { 'If-None-Match': revision } });
     assert.equal(repeated.status,304); assert.equal(await repeated.text(),'');
+    assert.equal(fullReads,before304);
+    assert.equal(metadata,2); // One file metadata lookup and one download link; cached reads use DB only.
   } finally {
     await new Promise(resolve => server.close(resolve));
     if (prev === undefined) delete process.env.YANDEX_PUBLIC_URL; else process.env.YANDEX_PUBLIC_URL=prev;
@@ -117,4 +121,52 @@ test('database config requires every DB_* variable and a valid port', async () =
   await assert.rejects(incomplete.ready(), /DB_PORT.*DB_NAME.*DB_USER.*DB_PASSWORD/);
   const invalid = createPreparedStore({ DB_HOST:'localhost', DB_PORT:'nope', DB_NAME:'local', DB_USER:'local', DB_PASSWORD:'test' });
   await assert.rejects(invalid.ready(), /DB_PORT/);
+});
+
+test('folder map records ready and missing sources without exposing workbooks', async t => {
+  const source = 'https://disk.yandex.ru/d/PreparedMap';
+  const path = '/Предприятие/РЭС/Расширенный список.xlsx', workbook = registry();
+  const roots = { '/':[{ type:'dir',name:'Предприятие',path:'/Предприятие' }],
+    '/Предприятие':[{ type:'dir',name:'РЭС',path:'/Предприятие/РЭС' }],
+    '/Предприятие/РЭС':[{ type:'file',name:'Расширенный список.xlsx',path }] };
+  const savedFetch = globalThis.fetch, entries = new Map(), folders = new Map();
+  t.mock.method(globalThis, 'fetch', async (input, opts) => String(input).startsWith('https://downloader.disk.yandex.ru/')
+    ? new Response(workbook, { headers:{ 'content-length':String(workbook.length) } }) : savedFetch(input, opts));
+  const store = {
+    get: async (src,p,role) => entries.get(JSON.stringify([src,p,role])),
+    put: async (src,p,role,revision,data) => entries.set(JSON.stringify([src,p,role]),{revision,data}),
+    putFolder: async (src,folder,statuses) => folders.set(folder.path,{ enterprise_path:folder.enterprisePath,
+      enterprise_name:folder.enterpriseName,res_path:folder.path,res_name:folder.name,statuses,checked_at:new Date() }),
+    listFolders: async () => [...folders.values()],
+    pruneFolders: async (src,paths) => { for (const key of folders.keys()) if (!paths.includes(key)) folders.delete(key); },
+  };
+  const service = createPreparedService({ source, store, yandex: async url => {
+    const p = url.searchParams.get('path');
+    if (url.pathname.endsWith('/download')) return Response.json({ href:'https://downloader.disk.yandex.ru/file' });
+    if (p === path) return Response.json({ type:'file',name:'Расширенный список.xlsx',size:workbook.length,modified:'2026-10-04' });
+    return Response.json({ type:'dir',_embedded:{ items:roots[p] || [],total:(roots[p] || []).length } });
+  } });
+  await service.syncAll();
+  const status = folders.get('/Предприятие/РЭС').statuses;
+  assert.equal(status.registry.state,'ready');
+  assert.equal(status.registry.path,path);
+  assert.equal(status.consumption.state,'missing');
+  assert.equal(status.incoming.state,'missing');
+  assert.equal(JSON.stringify([...folders.values()]).includes('Проверить ввод'),false);
+  const previous = process.env.YANDEX_PUBLIC_URL; process.env.YANDEX_PUBLIC_URL = source;
+  const server = createServer({ preparedStore:store });
+  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+  try {
+    const response = await savedFetch(`http://127.0.0.1:${server.address().port}/api/load-map`);
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).folders[0].statuses.registry.state,'ready');
+    const base = `http://127.0.0.1:${server.address().port}/api/directory?path=`;
+    assert.equal((await (await savedFetch(base+'%2F')).json())._embedded.items[0].name,'Предприятие');
+    assert.equal((await (await savedFetch(base+encodeURIComponent('/Предприятие'))).json())._embedded.items[0].name,'РЭС');
+    assert.equal((await (await savedFetch(base+encodeURIComponent('/Предприятие/РЭС'))).json())._embedded.items[0].path,path);
+    assert.equal((await (await savedFetch(base+encodeURIComponent(path))).json()).type,'file');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    if (previous === undefined) delete process.env.YANDEX_PUBLIC_URL; else process.env.YANDEX_PUBLIC_URL=previous;
+  }
 });
