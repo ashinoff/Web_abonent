@@ -19,10 +19,10 @@ export function mapAddress(note) {
 export function groupMapNotes(notes) {
   const groups = new Map();
   for (const note of notes) {
-    const address = mapAddress(note), key = address ? norm(address) : `missing:${note.id}`;
+    const address = mapAddress(note), key = note.type === 'user' ? `user:${note.id}` : address ? norm(address) : `missing:${note.id}`;
     if (!groups.has(key)) groups.set(key, { key, address, notes:[], location:null, candidates:[], state:address ? 'pending' : 'no_address' });
     const group = groups.get(key); group.notes.push(note);
-    const location = registryLocation(note.fields);
+    const location = note.type === 'user' && validLocation(note.location) ? note.location : registryLocation(note.fields);
     if (location && !group.location) { group.location = location; group.state = 'ready'; }
   }
   return [...groups.values()];
@@ -40,8 +40,8 @@ export function mapNoteMatches(note, query) {
   const f = note.fields || {};
   return norm([note.note,note.address,f.name,f.meter,f.account,f.tp,f.point,f.pointNumber,f.pointName].filter(Boolean).join(' ')).includes(norm(query));
 }
-export function visibleMapGroups(groups, query) {
-  return groups.map(group => ({ ...group, notes:group.notes.filter(note => mapNoteMatches(note, query)) })).filter(group => group.notes.length);
+export function visibleMapGroups(groups, query, origin = 'all') {
+  return groups.map(group => ({ ...group, notes:group.notes.filter(note => mapNoteMatches(note, query) && (origin === 'all' || (note.type === 'user' ? 'user' : 'registry') === origin)) })).filter(group => group.notes.length);
 }
 
 const storageKey = 'abonent.map-locations.v1';

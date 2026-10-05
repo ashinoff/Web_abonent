@@ -1,20 +1,16 @@
 import { groupMapNotes,visibleMapGroups,exactCandidate,validLocation,readMapLocations,saveMapLocation } from './notes-map-data.js';
+import { loadMapLibrary } from './map-library.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const number = value => new Intl.NumberFormat('ru-RU').format(value);
-let leaflet;
-async function getLeaflet() {
-  if (globalThis.L) return globalThis.L;
-  leaflet ||= import('./vendor/leaflet/leaflet.js'); await leaflet;
-  return globalThis.L;
-}
-
-export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet = getLeaflet,fetcher = (...args) => fetch(...args) }) {
+export function initNotesMapUI({ request,openRecord,openUserNote=()=>{},deleteUserNote=()=>{},context,onMeta,loadLeaflet = loadMapLibrary,fetcher = (...args) => fetch(...args) }) {
   const $ = selector => document.querySelector(selector);
   const panel = $('#notes-map-panel'), canvas = $('#notes-map-canvas'), status = $('#notes-map-status');
   const find = $('#notes-map-find'), stopButton = $('#notes-map-stop'), details = $('#notes-map-detail');
   let map, layer, L, groups = [], scope = '', loaded = false, visible = false, query = '', generation = 0;
   let controller = null, loading = false, selected = '', placing = '', preview = null, previewMarker = null;
+  let userNotes = [], origin = 'all';
+  const visibleGroups = value => visibleMapGroups(value,query,origin);
   const showStatus = text => { status.textContent = text; status.hidden = !text; };
   const currentGroup = key => groups.find(group => group.key === key);
   function stop(text = '') {
@@ -29,19 +25,24 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
   }
   function fit() {
     if (!map) return;
-    const locations = visibleMapGroups(groups,query).map(group => group.location).filter(validLocation);
+    const locations = visibleGroups(groups).map(group => group.location).filter(validLocation);
     if (locations.length) map.fitBounds(locations.map(value => [value.lat,value.lon]), { padding:[36,36],maxZoom:17,animate:false });
   }
   function recordButton(note) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'map-note-card';
-    button.innerHTML = `<span class="map-note-name">${esc(note.fields.name || 'Абонент')}</span><span class="map-note-ids">ПУ ${esc(note.fields.meter || '—')} · ЛС ${esc(note.fields.account || '—')}</span><span class="map-note-text">${esc(note.note)}</span><span class="map-note-open">Открыть карточку →</span>`;
-    button.addEventListener('click', () => openRecord(note.id,{ parent:'notes-dialog',variants:[] })); return button;
+    button.dataset.origin = note.type === 'user' ? 'user' : 'registry';
+    button.innerHTML = `<span class="note-origin" data-origin="${button.dataset.origin}">${note.type === 'user' ? 'Пользовательское' : 'Из реестра'}</span><span class="map-note-name">${esc(note.fields.name || 'Абонент')}</span><span class="map-note-ids">ПУ ${esc(note.fields.meter || '—')} · ЛС ${esc(note.fields.account || '—')}</span><span class="map-note-text">${esc(note.note)}</span><span class="map-note-open">Открыть карточку →</span>`;
+    button.addEventListener('click', () => note.type === 'user' ? openUserNote(note) : openRecord(note.id,{ parent:'notes-dialog',variants:[] }));
+    if (note.type !== 'user') return button;
+    const wrapper=document.createElement('div');wrapper.className='map-user-note';wrapper.append(button);
+    const remove=document.createElement('button');remove.type='button';remove.className='user-note-delete';remove.textContent='Удалить отметку';
+    remove.addEventListener('click',()=>deleteUserNote(note));wrapper.append(remove);return wrapper;
   }
   function selectGroup(key) {
     cancelPlacement(); selected = key; const group = currentGroup(key); if (!group) return;
     details.replaceChildren(); details.hidden = false;
     const heading = document.createElement('h3'); heading.textContent = group.address || 'Адрес не указан'; details.append(heading);
-    const visibleGroup = visibleMapGroups([group],query)[0];
+    const visibleGroup = visibleGroups([group])[0];
     for (const note of visibleGroup?.notes || []) details.append(recordButton(note));
     if (group.candidates.length && !group.location) {
       const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = 'Проверьте найденные места и выберите нужное:'; details.append(hint);
@@ -57,7 +58,7 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
       stop(); placing = key; canvas.classList.add('placing');
       $('#notes-map-cancel').hidden = false; showStatus('Нажмите на нужный дом на карте, затем «Сохранить место».');
       canvas.scrollIntoView({ block:'center',behavior:'smooth' });
-    }); details.append(button);
+    }); if (!group.notes.some(note=>note.type==='user')) details.append(button);
     if (validLocation(group.location)) {
       const label = document.createElement('p'); label.className = 'hint';
       label.textContent = group.location.precision === 'registry' ? 'Координаты из реестра.' : group.location.precision === 'manual' ? 'Место указано вручную.' : 'Дом найден по адресу. При необходимости исправьте место.';
@@ -72,7 +73,7 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
   }
   function render() {
     if (!map || !visible) return;
-    layer.clearLayers(); const filtered = visibleMapGroups(groups,query), placed = filtered.filter(group => validLocation(group.location));
+    layer.clearLayers(); const filtered = visibleGroups(groups), placed = filtered.filter(group => validLocation(group.location));
     const total = filtered.reduce((sum,group) => sum + group.notes.length,0), located = placed.reduce((sum,group) => sum + group.notes.length,0);
     onMeta(`На карте: ${number(located)} из ${number(total)} уведомлений`);
     const positions = new Map();
@@ -82,7 +83,9 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
     }
     for (const atPoint of positions.values()) {
       const count = atPoint.reduce((sum,group) => sum + group.notes.length,0), p = atPoint[0].location;
-      const marker = L.marker([p.lat,p.lon],{ title:atPoint.map(group => group.address).join(' · '),icon:L.divIcon({ className:'notification-map-marker',html:`<span>${number(count)}</span>`,iconSize:[34,34],iconAnchor:[17,34] }) });
+      const types=new Set(atPoint.flatMap(group=>group.notes.map(note=>note.type==='user'?'user':'registry')));
+      const kind=types.size>1?'mixed':[...types][0];
+      const marker = L.marker([p.lat,p.lon],{ title:atPoint.map(group => group.address).join(' · '),icon:L.divIcon({ className:`notification-map-marker ${kind}-marker`,html:`<span>${number(count)}</span>`,iconSize:[34,34],iconAnchor:[17,34] }) });
       const popup = document.createElement('div'); popup.className = 'map-popup';
       atPoint.forEach(group => {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'map-popup-address'; button.textContent = group.address || 'Адрес не указан';
@@ -124,7 +127,7 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
       if (!loaded) {
         const info = context(), data = await request('mapNotes');
         if (version !== generation || !visible) return;
-        scope = info.scope; groups = groupMapNotes(data); const saved = readMapLocations(scope);
+        scope = info.scope; groups = groupMapNotes([...data,...userNotes]); const saved = readMapLocations(scope);
         groups.forEach(group => { if (!group.location && saved.has(group.key)) { group.location = saved.get(group.key); group.state = 'ready'; } });
         loaded = true;
       }
@@ -136,7 +139,7 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
   async function geocode() {
     if (loading || !navigator.onLine) return;
     const info = context(); if (!info.endpoint) { showStatus('Для поиска адресов откройте сайт на Амвере. Место можно указать вручную.'); return; }
-    const pending = visibleMapGroups(groups,query).filter(group => group.address && !group.location && group.state === 'pending').slice(0,50).map(group => currentGroup(group.key));
+    const pending = visibleGroups(groups).filter(group => group.address && !group.location && group.state === 'pending').slice(0,50).map(group => currentGroup(group.key));
     if (!pending.length) return;
     const run = new AbortController(), version = generation; controller = run; loading = true;
     find.hidden = true; stopButton.hidden = false;
@@ -168,5 +171,12 @@ export function initNotesMapUI({ request,openRecord,context,onMeta,loadLeaflet =
   $('#notes-map-cancel').addEventListener('click',() => { cancelPlacement(); showStatus(''); });
   window.addEventListener('offline',() => { if (visible) { stop('Связь пропала. Найденные отметки доступны; продолжите поиск со связью.'); render(); } });
   window.addEventListener('online',() => { if (visible) { showStatus('Связь появилась. Можно продолжить поиск адресов.'); render(); } });
-  return { show,hide,reset,filter(value) { query = value; if (loaded) { render(); fit(); } } };
+  return { show,hide,reset,filter(value,type='all') { query=value;origin=type;if(loaded){render();fit();} },
+    setUserNotes(notes) {
+      userNotes=notes;if(!loaded)return;
+      stop();cancelPlacement();
+      groups=[...groups.filter(group=>!group.notes.some(note=>note.type==='user')),...groupMapNotes(notes)];
+      if(visible){render();if(selected && currentGroup(selected))selectGroup(selected);}
+    },
+  };
 }

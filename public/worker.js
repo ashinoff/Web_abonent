@@ -7,7 +7,7 @@ self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=10');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=11');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');
@@ -54,7 +54,7 @@ self.onmessage = async ({ data }) => {
     }
     if (action === 'releaseSource') { sourceSheets = []; self.postMessage({ id, result: true }); return; }
     if (action === 'analysisRecords') { const { analysisRecords } = await core; self.postMessage({ id, result: analysisRecords(index?.records || []) }); return; }
-    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, listNotes, listMapNotes } = await core;
+    const { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, listNotes, listMapNotes, notificationRecord } = await core;
     if (action === 'clear') { sourceSheets = []; sheets = []; index = null; self.postMessage({ id, result: true }); return; }
     if (action === 'load' || action === 'demo') {
       sourceSheets = []; sheets = []; index = null;
@@ -96,6 +96,9 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: search(index, payload) });
     } else if (action === 'mapNotes') {
       self.postMessage({ id,result:listMapNotes(index) });
+    } else if (action === 'notificationRecord') {
+      if (!index) throw new Error('Сначала откройте реестр.');
+      self.postMessage({id,result:notificationRecord(index,payload.fields)});
     } else if (action === 'notes') {
       if (!index) throw new Error('Сначала откройте реестр.');
       self.postMessage({ id, result: listNotes(index, payload) });

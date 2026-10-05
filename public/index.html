@@ -8,9 +8,9 @@
   <title>РОССЕТИ — Кубаньэнерго · Реестр абонентов</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./styles.css?v=10">
+  <link rel="stylesheet" href="./styles.css?v=11">
   <script src="./config.js"></script>
-  <script type="module" src="./app.js?v=10"></script>
+  <script type="module" src="./app.js?v=11"></script>
 </head>
 <body>
   <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -34,6 +34,7 @@
     <symbol id="i-registry" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
     <symbol id="i-consumption" viewBox="0 0 24 24"><path d="M3 4v16h18M6 16l4-5 4 2 5-7"/><circle cx="10" cy="11" r="1"/><circle cx="19" cy="6" r="1"/></symbol>
     <symbol id="i-incoming" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 17v-4a4 4 0 0 1 8 0v4M8 17h8M9.5 8.5l1.2-1.5m3.8 1.5L13.3 7M12 14l2-2"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
     <symbol id="i-load-map" viewBox="0 0 24 24"><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M7 6 11 17M17 6 13 17M7 5h10"/></symbol>
   </svg>
   <header class="topbar">
@@ -96,6 +97,7 @@
     <div class="dialog-body"><div id="connection-settings" role="tabpanel" aria-labelledby="connection-tab">
       <section class="setting-section"><h3>Источники данных</h3><dl class="source-details"><div><dt>База данных</dt><dd id="base-detail">Проверяем подключение…</dd></div><div><dt>Предприятие</dt><dd id="enterprise-detail">Не выбрано</dd></div><div><dt>РЭС</dt><dd id="res-detail">Не выбрана</dd></div></dl><p id="source-setup-message" class="hint" role="status"></p><button id="read-folders" class="secondary full-width"><svg><use href="#i-refresh"/></svg>Проверить подключение и обновить</button><button type="button" class="secondary full-width selection-stop" data-stop-loading hidden><svg aria-hidden="true"><use href="#i-stop"/></svg>Остановить загрузку</button></section>
       <section class="setting-section" id="source-files" aria-label="Просмотр файлов"></section>
+      <section class="setting-section" id="current-res-notifications" hidden><h3>Уведомления РЭС</h3><p id="current-res-notifications-name" class="hint"></p><p class="hint">Пользовательские отметки общие для сотрудников этого РЭС. Очистка удалит их у всех; примечания из Excel сохранятся.</p><button type="button" class="secondary user-note-delete" id="clear-res-notifications"><svg aria-hidden="true"><use href="#i-trash"/></svg>Очистить пользовательские уведомления</button></section>
       <section class="setting-section"><h3>Автоматический выбор</h3><p class="hint">В папке РЭС ищем «Расширенный список» — реестр, «ПО» или «ПО по месячно» — потребление, «прием» — технический учёт. Подходят XLS и XLSX, регистр букв не важен. Из подходящих файлов читаем самый новый; при одинаковой дате — XLSX.</p><p class="hint">Если файл называется иначе или не прочитан, выберите его вручную из папки выше. Ручной выбор сохраняется для текущей РЭС. Остальные файлы не скачиваются.</p></section>
       <div class="setting-section" id="mapping-section" hidden><h3>Проверьте столбцы</h3><p class="hint">Убедитесь, что приложение правильно определило номера ПУ и лицевых счетов.</p><div id="mapping-fields"></div><div id="mapping-warning" class="notice" hidden></div><button id="confirm-mapping" class="primary full-width">Использовать реестр</button></div>
       <div id="settings-message" class="form-message" role="status" hidden></div>
@@ -118,12 +120,13 @@
     <button type="button" class="scroll-top" data-scroll-top aria-label="Наверх списка ПУ" hidden><svg><use href="#i-up"/></svg></button>
   </dialog>
   <dialog id="notes-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="notes-title">
-    <div class="dialog-header tp-header"><div class="tp-header-top"><div class="tp-header-copy"><h2 id="notes-title">Примечания</h2><p class="registry-meta" id="notes-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть примечания"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><label class="sr-only" for="notes-filter">Найти потребителя или примечание</label><div class="search-input-wrap tp-filter-wrap"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="notes-filter" type="search" placeholder="ПУ, ЛС, ТУ или примечание" autocomplete="off" maxlength="200"></div></div>
+    <div class="dialog-header tp-header"><div class="tp-header-top"><div class="tp-header-copy"><h2 id="notes-title">Уведомления</h2><p class="registry-meta" id="notes-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть примечания"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div><label class="sr-only" for="notes-filter">Найти потребителя или примечание</label><div class="search-input-wrap tp-filter-wrap"><svg aria-hidden="true"><use href="#i-search"/></svg><input id="notes-filter" type="search" placeholder="ПУ, ЛС, ТУ или примечание" autocomplete="off" maxlength="200"></div></div>
     <div class="notes-view-switch" role="group" aria-label="Вид уведомлений"><button type="button" id="notes-list-mode" aria-pressed="true">Список</button><button type="button" id="notes-map-mode" aria-pressed="false"><svg aria-hidden="true"><use href="#i-pin"/></svg>Карта</button></div>
+    <div class="notes-filters"><label for="notes-origin" class="sr-only">Тип уведомлений</label><select id="notes-origin"><option value="all">Все уведомления</option><option value="registry">Из реестра</option><option value="user">Пользовательские</option></select><span class="map-origin-legend"><i class="registry-legend"></i>Реестр <i class="user-legend"></i>Пользовательские</span><p id="user-notes-sync" class="hint" role="status" hidden></p></div>
     <div class="dialog-body" id="notes-body"><div class="meter-list" id="notes-list"></div><button type="button" class="secondary show-more" id="notes-more" hidden>Показать ещё</button><p class="form-message" id="notes-message" role="status" hidden></p>
       <section id="notes-map-panel" hidden aria-label="Уведомления на карте">
         <div class="notes-map-toolbar" data-no-swipe><button type="button" class="primary" id="notes-map-find" disabled>Найти адреса</button><button type="button" class="secondary" id="notes-map-stop" hidden>Остановить</button><button type="button" class="secondary" id="notes-map-fit" aria-label="Показать все отметки на карте"><svg aria-hidden="true"><use href="#i-pin"/></svg>Все отметки</button></div>
-        <p class="map-disclosure" id="notes-map-disclosure">«Найти адреса» передаст адреса домов сервису <span id="notes-map-provider">photon.komoot.io</span>. ФИО, квартиры, номера и текст уведомлений остаются на устройстве. Координаты сохраняются на этом телефоне.</p>
+        <p class="map-disclosure" id="notes-map-disclosure">«Найти адреса» передаст адреса домов сервису <span id="notes-map-provider">photon.komoot.io</span>. Сервис поиска получает только адрес дома. Места примечаний сохраняются на телефоне, пользовательские отметки с комментарием — в общей базе РЭС.</p>
         <p class="notes-map-status" id="notes-map-status" role="status" hidden></p>
         <div id="notes-map-canvas" class="notes-map-canvas" data-no-swipe aria-label="Карта адресов уведомлений"></div>
         <div class="map-placement-actions" data-no-swipe><button type="button" class="primary" id="notes-map-save" hidden>Сохранить место</button><button type="button" class="secondary" id="notes-map-cancel" hidden>Отмена</button></div>
@@ -134,6 +137,20 @@
       </section>
     </div>
     <button type="button" class="scroll-top" data-scroll-top aria-label="Наверх примечаний" hidden><svg aria-hidden="true"><use href="#i-up"/></svg></button>
+  </dialog>
+  <dialog id="user-note-dialog" class="registry-dialog user-note-dialog full-screen-dialog" aria-labelledby="user-note-title">
+    <div class="dialog-header"><div><h2 id="user-note-title">Отметить потребителя</h2><p id="user-note-consumer" class="registry-meta"></p></div><button type="button" class="icon-button close-dialog" aria-label="Закрыть отметку"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body"><form id="user-note-form">
+      <p id="user-note-address" class="user-note-address"></p><p id="user-note-sharing" class="hint"></p>
+      <div class="notes-map-toolbar" data-no-swipe><button type="button" class="secondary" id="user-note-find"><svg aria-hidden="true"><use href="#i-search"/></svg>Найти адрес</button><button type="button" class="secondary" id="user-note-my-location"><svg aria-hidden="true"><use href="#i-pin"/></svg>Моё место</button></div>
+      <p class="map-disclosure">Поиск передаст адрес дома сервису <span id="user-note-provider">photon.komoot.io</span>.</p>
+      <p id="user-note-status" class="notes-map-status" role="status" hidden></p><div id="user-note-candidates" data-no-swipe></div>
+      <div id="user-note-map" class="notes-map-canvas" data-no-swipe aria-label="Выберите место потребителя"></div>
+      <p id="user-note-location" class="hint"></p>
+      <details class="user-note-coordinate-panel" data-no-swipe><summary>Указать координаты вручную</summary><div class="user-note-coordinates"><label>Широта<input id="user-note-lat" type="text" inputmode="decimal" autocomplete="off" placeholder="43,60000"></label><label>Долгота<input id="user-note-lon" type="text" inputmode="decimal" autocomplete="off" placeholder="39,72000"></label></div><button type="button" class="secondary" id="user-note-coordinates">Показать место</button></details>
+      <label class="input-label user-note-comment-label" for="user-note-comment">Комментарий</label><textarea id="user-note-comment" rows="4" maxlength="2000" required placeholder="Что нужно проверить или сделать у потребителя"></textarea>
+      <button type="submit" class="primary full-width user-note-save" id="user-note-save"><svg aria-hidden="true"><use href="#i-pin"/></svg>Сохранить отметку</button>
+    </form></div>
   </dialog>
   <dialog id="search-results-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="search-modal-title">
     <div class="dialog-header"><div><h2 id="search-modal-title">Результаты поиска</h2><p class="registry-meta" id="search-modal-meta" aria-live="polite"></p></div><button class="icon-button close-dialog" aria-label="Закрыть результаты поиска"><svg><use href="#i-close"/></svg></button></div>

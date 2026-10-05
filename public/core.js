@@ -158,6 +158,13 @@ export function listMapNotes(index) {
   const fields = ['meter','account','name','tp','point','pointNumber','pointName','locality','street','house','building','latitude','longitude'];
   return index.notes.map(note => ({ ...note, fields:Object.fromEntries(fields.filter(key => note.fields[key]).map(key => [key,note.fields[key]])) }));
 }
+export function notificationRecord(index, fields = {}) {
+  if (!fields.meter && !fields.account) throw new Error('Нет номера ПУ или лицевого счёта.');
+  const keys=['meter','account',...(fields.point || fields.pointNumber ? ['point','pointNumber'] : ['pointName'])].filter(key=>fields[key]);
+  const records=index.records.filter(record=>keys.every(key=>idKey(record.fields[key])===idKey(fields[key])));
+  if (!records.length) throw new Error('Потребитель этой отметки не найден в текущем реестре. Возможно, реестр обновился.');
+  return { id:records[0].id,variants:records.map(record=>({id:record.id,account:record.fields.account || '',point:record.fields.point || record.fields.pointNumber || '',pointName:record.fields.pointName || '',sheet:record.sheet,row:record.row})) };
+}
 // Only these fields are needed to relate consumption to registry points.
 export function analysisRecords(records) {
   const keys = ['account', 'point', 'pointNumber', 'pointName', 'meter', 'tp', 'power', 'name'];

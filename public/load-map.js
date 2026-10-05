@@ -7,10 +7,11 @@ const states = { ready:'В базе', pending:'Ожидает подготовк
 const copyLabels = { ready:'Сохранено', partial:'Частично сохранено', stale:'Сохранена старая версия', missing:'Не скачано' };
 const date = value => value ? new Date(value).toLocaleString('ru-RU', { dateStyle:'short', timeStyle:'short' }) : '—';
 
-export function initLoadMap(root, { getFiles = folderSources, beforeDelete = () => {}, onCopiesChanged = () => {} } = {}) {
+export function initLoadMap(root, { getFiles = folderSources, beforeDelete = () => {}, onCopiesChanged = () => {},onClearNotifications = async()=>false } = {}) {
   const list = $('#load-map-list'), updated = $('#load-map-updated'), button = $('#load-map-refresh'), storage = $('#offline-storage');
   let loading = false, folders = [], copies = [], source = '', job = null, localVersion = 0;
   const messages = new Map();
+  const clearing = new Set();
   function render() {
     const open = new Set([...list.querySelectorAll('details[open]')].map(item => item.dataset.enterprise));
     const focused = document.activeElement?.closest('[data-offline-action]');
@@ -30,10 +31,11 @@ export function initLoadMap(root, { getFiles = folderSources, beforeDelete = () 
         const state = offlineCopyState(copy, files), active = job?.source === source && job.resPath === folder.res_path;
         const controls = (action, label, disabled = false, extra = '') => `<button type="button" class="offline-action ${extra}" data-offline-action="${action}" data-res-path="${esc(folder.res_path)}" ${disabled ? 'disabled' : ''}>${label}</button>`;
         const status = messages.get(folder.res_path);
+        const clearButton=`<button type="button" class="offline-action offline-delete" data-clear-notifications="${esc(folder.res_path)}" ${!navigator.onLine || folder.localOnly || clearing.has(folder.res_path)?'disabled':''}><svg aria-hidden="true"><use href="#i-trash"/></svg>Очистить уведомления</button>`;
         return `<article class="load-map-res"><div class="load-map-res-title"><strong>${esc(folder.res_name)}</strong><small>${folder.localOnly ? 'Только на телефоне' : ready + ' из 3 готово'}</small></div><div class="load-map-statuses">${roles.map(([key,label]) => {
           const item = statuses[key] || { state:'missing' }, state = states[item.state] ? item.state : 'error';
           return `<span class="load-map-status" data-state="${state}" title="${esc(item.file || label)}"><i aria-hidden="true"></i>${label}: ${states[state]}</span>`;
-        }).join('')}</div><small class="load-map-date">Проверено в базе: ${esc(date(folder.checked_at))}</small><div class="offline-copy" data-state="${state}"><span>На телефоне: <strong>${copyLabels[state]}</strong>${copy ? ' · ' + formatBytes(copy.bytes) : ''}</span>${copy ? '<small>' + esc(date(copy.savedAt)) + '</small>' : ''}</div><div class="offline-actions">${active ? controls('stop', 'Остановить', false, 'offline-stop') : controls(copy ? 'update' : 'download', copy ? 'Обновить копию' : 'Скачать на телефон', !navigator.onLine || !files.length)}${controls('delete', 'Удалить с телефона', !copy, 'offline-delete')}</div><p class="offline-message" role="status" ${status ? '' : 'hidden'} data-kind="${esc(status?.kind || '')}">${esc(status?.text || '')}</p></article>`;
+        }).join('')}</div><small class="load-map-date">Проверено в базе: ${esc(date(folder.checked_at))}</small><div class="offline-copy" data-state="${state}"><span>На телефоне: <strong>${copyLabels[state]}</strong>${copy ? ' · ' + formatBytes(copy.bytes) : ''}</span>${copy ? '<small>' + esc(date(copy.savedAt)) + '</small>' : ''}</div><div class="offline-actions">${active ? controls('stop', 'Остановить', false, 'offline-stop') : controls(copy ? 'update' : 'download', copy ? 'Обновить копию' : 'Скачать на телефон', !navigator.onLine || !files.length)}${controls('delete', 'Удалить с телефона', !copy, 'offline-delete')}${clearButton}</div><p class="offline-message" role="status" ${status ? '' : 'hidden'} data-kind="${esc(status?.kind || '')}">${esc(status?.text || '')}</p></article>`;
       }).join('')}</div></details>`;
     }).join('');
     if (focus) [...list.querySelectorAll('[data-offline-action]')].find(item => item.dataset.resPath === focus.path && item.dataset.offlineAction === focus.action)?.focus({ preventScroll: true });
@@ -113,6 +115,18 @@ export function initLoadMap(root, { getFiles = folderSources, beforeDelete = () 
     finally { if (current === source) await refreshLocal(); }
   }
   list.addEventListener('click', event => {
+    const clear=event.target.closest('[data-clear-notifications]');
+    if(clear){
+      if(clear.disabled)return;
+      const folder=folders.find(item=>item.res_path===clear.dataset.clearNotifications),current=source;
+      if(!folder)return;
+      clearing.add(folder.res_path);render();
+      Promise.resolve(onClearNotifications(current,folder)).then(done=>{
+        if(done && current===source)messages.set(folder.res_path,{kind:'success',text:'Пользовательские уведомления очищены у всех сотрудников РЭС. Примечания из реестра сохранены.'});
+      }).catch(error=>{if(current===source)messages.set(folder.res_path,{kind:'error',text:error.message});})
+        .finally(()=>{clearing.delete(folder.res_path);if(current===source)render();});
+      return;
+    }
     const control = event.target.closest('[data-offline-action]');
     if (!control || control.disabled) return;
     const path = control.dataset.resPath, action = control.dataset.offlineAction;

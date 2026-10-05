@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { notificationSchema, createNotificationStore } from './notification-store.mjs';
 
 const names = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
 export function createPreparedStore(env = process.env) {
@@ -26,7 +27,7 @@ export function createPreparedStore(env = process.env) {
       enterprise_name text NOT NULL, res_name text NOT NULL,
       statuses jsonb NOT NULL, checked_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (source, res_path)
-    )`)).catch(error => { initialized = null; throw error; });
+    )`)).then(() => pool.query(notificationSchema)).catch(error => { initialized = null; throw error; });
     await initialized;
   }
   async function writeRaw(source, path, role, revision, json) {
@@ -39,6 +40,7 @@ export function createPreparedStore(env = process.env) {
     [source, path, role, revision, json]);
   }
   return {
+    ...createNotificationStore(pool,ready),
     snapshotStorage: 'json',
     ready,
     async get(source, path, role) {

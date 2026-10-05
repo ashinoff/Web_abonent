@@ -9,6 +9,7 @@ import { Readable, Transform } from 'node:stream';
 import { createPreparedStore } from './prepared-store.mjs';
 import { createPreparedService, preparationMemory } from './prepared-service.mjs';
 import { createMapGeocoder } from './map-geocoder.mjs';
+import { createNotificationsHandler } from './user-notifications.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -90,6 +91,7 @@ export function createServer(options = {}) {
   const store = options.preparedStore || createPreparedStore();
   const prepared = store && createPreparedService({ source: key, store, yandex });
   const geocoder = options.mapGeocoder || createMapGeocoder();
+  const notifications = createNotificationsHandler({ source:key,store,sendJson });
   let databaseConnected = Boolean(store && !store.ready);
   let syncStatus = { state: 'waiting', checkedAt: null, issue: null };
   const server = http.createServer(async (req, res) => {
@@ -100,6 +102,7 @@ export function createServer(options = {}) {
     if (!authorized(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Abonent", charset="UTF-8"' }); res.end('Требуется вход'); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
+      if (url.pathname === '/api/user-notifications') { await notifications(req,res,url); return; }
       if (url.pathname === '/api/map-geocode' && req.method === 'POST') {
         if (!String(req.headers['content-type'] || '').startsWith('application/json')) { sendJson(res,415,{ error:'Требуется JSON.' }); return; }
         // The browser sends only the house address, never a record or note.

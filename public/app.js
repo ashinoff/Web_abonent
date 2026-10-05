@@ -12,7 +12,9 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=10';
+import { listOfflineCopies } from './prepared-cache.js?v=11';
+import { createUserNotifications } from './user-notifications.js';
+import { initUserNoteEditor } from './user-note-editor.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -37,6 +39,7 @@ let directoryOffline = false;
 let shellReady = false;
 let offlineChoices = [], offlineSource = '', offlineListVersion = 0;
 let offlineAvailabilityVersion = 0;
+let usingOfflineCopy = false;
 let tpChoices = [], tpSelection = null, tpMeters = [], tpVersion = 0, tpBusy = false, recordVersion = 0;
 let recordContext = { parent: null, variants: [] };
 let tpViewKey = '', tpPickerQuery = '', tpPickerScroll = 0, tpFilterTimer = null;
@@ -46,7 +49,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=10', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=11', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
@@ -204,6 +207,11 @@ async function selectOfflineRes(i) {
 }
 function renderIndicators() {
   notesUI.update(summary, busy);
+  userNotes.changeContext();
+  const canClear=Boolean(selectedRes && proxy && config.prepared && !isDemo && currentSource?.type !== 'local');
+  $('#current-res-notifications').hidden=!canClear;
+  $('#current-res-notifications-name').textContent=selectedRes?.name || '';
+  $('#clear-res-notifications').disabled=!canClear || !navigator.onLine;
   document.querySelectorAll('[data-stop-loading]').forEach(button => { button.hidden = !(busy || sourceState === 'loading' || directoryState === 'loading'); });
   const offline = $('#offline-readiness');
   offline.hidden = !selectedRes || !config.prepared;
@@ -460,6 +468,7 @@ async function openRes(res, { keepSettings = false, offlineCopy = null } = {}) {
   if (!selectedFolder) return;
   const signal = loads.start();
   clearResSelection(); selectedRes = res;
+  usingOfflineCopy = Boolean(offlineCopy);
   consumptionState = 'checking'; incomingState = 'checking'; registryState = 'checking';
   if (prefs.res?.path !== res.path) prefs = { root: rootUrl(), folder: { name: selectedFolder.name, path: selectedFolder.path } };
   prefs.res = { name: res.name, path: res.path }; savePrefs(); renderResFolders();
@@ -620,6 +629,7 @@ async function readConsumptionFile(signal = loads.signal, offlineOnly = false) {
 }
 function clearDataset(keepDirectory = false) {
   notesUI.reset();
+  userNoteEditor.reset();
   operation++; consumptionInfo = null; incomingInfo = null; registryError = ''; resetMonthly(); analysisUI.reset(); incomingFile=null; incomingState='idle'; incomingError=''; if (keepDirectory) { if (consumptionFile) consumptionState='checking'; } else { consumptionFile=null; consumptionState='idle'; consumptionError=''; } searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
   tpVersion++; recordVersion++; tpChoices = []; tpSelection = null; tpMeters = []; tpBusy = false; if (!keepDirectory) { folderItems = []; filesState = 'idle'; filesError = ''; }
   tpViewKey = ''; tpPickerQuery = ''; tpPickerScroll = 0; clearTimeout(tpFilterTimer);
@@ -870,7 +880,7 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     const r = await rpc('record', { id });
     if (version !== recordVersion || op !== operation || context.parent && !$('#' + context.parent).open) return;
     activeRecord = r; recordContext = context;
-    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><p>${esc(r.address)}</p></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" id="consumer-analyze" type="button" ${consumptionState !== 'ready' || !r.fields.account ? 'disabled' : ''} aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span></button><p class="hint" id="analysis-availability">${consumptionState === 'ready' ? 'Все строки ЛС + ТУ суммируются по месяцам. Анализируем общий объём точки.' : 'Для анализа загрузите «ПО.xls» или «ПО.xlsx» в папку РЭС.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
+    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><div class="record-address"><p>${esc(r.address || 'Адрес не указан')}</p><button type="button" class="record-map-button" data-mark-consumer aria-label="Отметить потребителя на карте и добавить комментарий" title="Отметить на карте">${icon('pin')}</button></div></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" id="consumer-analyze" type="button" ${consumptionState !== 'ready' || !r.fields.account ? 'disabled' : ''} aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span></button><p class="hint" id="analysis-availability">${consumptionState === 'ready' ? 'Все строки ЛС + ТУ суммируются по месяцам. Анализируем общий объём точки.' : 'Для анализа загрузите «ПО.xls» или «ПО.xlsx» в папку РЭС.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
     $('#record-body .record-main-numbers').insertAdjacentHTML('beforeend', pointLine(r));
     if (context.variants.length > 1) {
       $('#record-body').insertAdjacentHTML('afterbegin', `<div class="record-variants"><label for="record-variant">Строки этого ПУ в реестре: ${context.variants.length}</label><select id="record-variant">${context.variants.map(v => `<option value="${esc(v.id)}" ${v.id === id ? 'selected' : ''}>${esc([pointText(v), 'ЛС ' + (v.account || '—'), v.sheet + ', строка ' + v.row].join(' · '))}</option>`).join('')}</select></div>`);
@@ -882,12 +892,46 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     $('#record-body').scrollTop = 0;
   } catch (error) { message('#form-message', error.message); }
 }
-const notesUI = initNotesUI({ request: rpc, openDialog, openRecord, mapContext:() => ({
+function notificationContext() {
+  const local=currentSource?.type==='local';
+  const endpoint=proxy && config.prepared ? new URL('./api/user-notifications',location.href).href : null;
+  return {source:isDemo?'demo':local?'local:'+currentSource.name:offlineRoot(),
+    resPath:isDemo?'/Пример/Демонстрация':local?'/Устройство/'+currentSource.name:selectedRes?.path || '',
+    shared:Boolean(endpoint && selectedRes && !isDemo && !local),endpoint,autoSync:!usingOfflineCopy};
+}
+function mapContext() {return {
   scope:JSON.stringify([currentSource?.type,rootUrl(),selectedRes?.path || currentSource?.res || '',currentSource?.fileInfo?.path || currentSource?.name || '']),
   provider:config.maps?.geocoder || 'photon.komoot.io',
   endpoint:proxy ? new URL('./api/map-geocode',location.href).href : null,
-}) });
+  shared:notificationContext().shared,
+};}
+const userNotes=createUserNotifications({context:notificationContext});
+const userNoteEditor=initUserNoteEditor({context:mapContext,save:(...args)=>userNotes.add(...args),onSaved:()=>toast('Отметка сохранена. Статус отправки — в уведомлениях.')});
+async function openUserNote(note) {
+  const op=operation;
+  try {
+    const found=await rpc('notificationRecord',{fields:note.fields});
+    if(op!==operation || !$('#notes-dialog').open)return;
+    await openRecord(found.id,{parent:'notes-dialog',variants:found.variants});
+  }catch(error){toast(error.message);}
+}
+async function deleteUserNote(note) {
+  if(!note || note.type!=='user')return;
+  const shared=notificationContext().shared;
+  if(!window.confirm(`Удалить пользовательскую отметку «${note.note.slice(0,100)}»?${shared?' Удаление распространится на всех сотрудников этого РЭС при наличии связи.':''}`))return;
+  try{await userNotes.remove(note.id);toast('Удаление отметки сохранено.');}catch(error){toast(error.message);}
+}
+async function clearNotifications(resPath,name,source=rootUrl()) {
+  if(source!==rootUrl())return false;
+  if(!window.confirm(`Очистить все пользовательские уведомления «${name}» у всех сотрудников? Примечания из реестра сохранятся.`))return false;
+  await userNotes.clear(resPath,source);toast('Пользовательские уведомления РЭС очищены.');return true;
+}
+const notesUI=initNotesUI({request:rpc,openDialog,openRecord,openUserNote,deleteUserNote,mapContext,
+  refreshUserNotes:fresh=>fresh?userNotes.sync({...notificationContext(),autoSync:true}):userNotes.refresh(),
+});
+userNotes.subscribe(data=>notesUI.setUserNotes(data));
 const loadMap = initLoadMap(rootUrl, {
+  onClearNotifications:(source,folder)=>clearNotifications(folder.res_path,folder.res_name,source),
   getFiles(folder) {
     const files = folderSources(folder);
     if (folder.res_path !== selectedRes?.path || filesState !== 'ready') return files;
@@ -914,7 +958,14 @@ const diagnosticsUI = initDiagnosticsUI({ openDialog, showSettings, context: () 
   selectedFile: selectedFile?.name, pending: Boolean(pending), offline: !navigator.onLine, serverMode: proxy,
 }) });
 const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings, onMapOpen: loadMap.refresh });
-$('#record-body').addEventListener('click', e => { if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName }); });
+$('#record-body').addEventListener('click', e => {
+  if(e.target.closest('[data-mark-consumer]') && activeRecord){void userNoteEditor.open(activeRecord);return;}
+  if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName });
+});
+$('#clear-res-notifications').addEventListener('click',async()=>{
+  if(!selectedRes)return;const button=$('#clear-res-notifications');button.disabled=true;
+  try{await clearNotifications(selectedRes.path,selectedRes.name);}catch(error){toast(error.message);}finally{button.disabled=!navigator.onLine;}
+});
 $('#contour-open').addEventListener('click', analysisUI.openTPs);
 $('#tp-analyze').addEventListener('click', () => { if (tpSelection) analysisUI.openTP(tpSelection.name); });
 $('#analysis-back').addEventListener('click', () => dialogControls.get('analysis-dialog').goBack());
@@ -1041,6 +1092,12 @@ if (loads.current(startupSignal) && sourceState === 'ready' && await readFolders
 window.addEventListener('offline', () => {
   diskState = 'disconnected'; renderIndicators();
 });
+window.addEventListener('online',()=>{renderIndicators();void userNotes.syncAll();});
+window.addEventListener('focus',()=>{if(!busy)void userNotes.syncAll();});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')void userNotes.syncAll();});
+const notificationsTimer=setInterval(()=>{if(document.visibilityState==='visible' && !busy && navigator.onLine)void userNotes.syncAll();},30000);
+notificationsTimer?.unref?.();
+window.addEventListener('pagehide',event=>{if(!event.persisted)clearInterval(notificationsTimer);});
 
 // Optional browser standard; uses exactly the same UI actions and current working area.
 if (document.modelContext?.registerTool) {

@@ -55,10 +55,27 @@ test('PostgreSQL snapshot migration and connection recovery', { skip: !env.DB_HO
       assert.ok(messages.some(message => message.startsWith('DB error:')));
       assert.deepEqual((await store.get(source,path,role)).data, legacy);
     });
+    await t.test('shared notifications persist, concurrent writes are idempotent, and clearing never recreates old notes',async()=>{
+      const a='/ЭС/РЭС А',b='/ЭС/РЭС Б';
+      const note={id:randomUUID(),fields:{meter:'0001',account:'001'},address:'Тестовый адрес',note:'Проверить',type:'user',location:{lat:43.6,lon:39.72,precision:'manual'}};
+      const result=await Promise.all([store.addUserNotification(source,a,0,note),store.addUserNotification(source,a,0,note)]);
+      assert.equal(result[0].notifications.length,1);assert.equal(result[1].notifications.length,1);
+      await Promise.all([store.addUserNotification(source,a,0,{...note,id:randomUUID()}),store.addUserNotification(source,a,0,{...note,id:randomUUID()})]);
+      assert.equal((await store.listUserNotifications(source,a)).notifications.length,3);
+      await store.addUserNotification(source,b,0,note);
+      const cleared=await store.clearUserNotifications(source,a,0);assert.equal(cleared.generation,1);assert.equal(cleared.notifications.length,0);
+      await assert.rejects(store.addUserNotification(source,a,0,note),error=>error.code==='notifications_cleared');
+      assert.equal((await store.listUserNotifications(source,b)).notifications.length,1);
+      await store.deleteUserNotification(source,b,0,note.id);
+      await assert.rejects(store.addUserNotification(source,b,0,note),error=>error.code==='notification_deleted');
+      await store.addUserNotification(source,a,1,{...note,id:randomUUID()});
+      assert.deepEqual((await store.get(source,path,role)).data,legacy);
+    });
   } finally {
     if (originalApplicationName === undefined) delete process.env.PGAPPNAME;
     else process.env.PGAPPNAME = originalApplicationName;
     await pool.query('DELETE FROM abonent_snapshots WHERE source=$1',[source]);
+    await pool.query('DELETE FROM abonent_notification_scopes WHERE source=$1',[source]);
     await store?.close();
     await pool.end();
   }
