@@ -7,7 +7,7 @@ self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=11');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=12');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');

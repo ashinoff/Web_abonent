@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Window } from 'happy-dom';
 import { initUserNoteEditor } from '../public/user-note-editor.js';
 import { initNotesUI } from '../public/notes-ui.js';
+import { mapRouteLinks } from '../public/map-routes.js';
 
 const record={id:'Лист:2',fields:{meter:'0001',account:'001',locality:'Тестовый',street:'Учебная',house:'12',name:'Тестовый потребитель'},address:'Тестовый, Учебная, 12'};
 async function page(t) {
@@ -69,6 +70,18 @@ test('map uses distinct user and registry markers and a mixed marker when both s
   const ui=initNotesMapUI({request:async()=>[registry],context:()=>({scope:'types'}),openRecord:()=>{},onMeta:()=>{},loadLeaflet:async()=>p.L});
   ui.setUserNotes([user]);await ui.show();assert.equal(p.markers.length,2);
   assert.ok(p.markers.some(marker=>marker.options.icon.className.includes('registry-marker')));assert.ok(p.markers.some(marker=>marker.options.icon.className.includes('user-marker')));
+  for(const marker of p.markers){
+    const [lat,lon]=marker.position,google=new URL(marker.popup.querySelector('[data-route-provider="google"]').href),yandex=new URL(marker.popup.querySelector('[data-route-provider="yandex"]').href);
+    assert.equal(google.searchParams.get('destination'),`${lat},${lon}`);assert.equal(google.searchParams.has('origin'),false);
+    assert.equal(yandex.searchParams.get('rtext'),`~${lat},${lon}`);assert.equal(yandex.searchParams.get('rtt'),'auto');
+    assert.equal(google.searchParams.has('query'),false);assert.equal(marker.popup.querySelector('.map-route-link').rel,'noopener noreferrer');
+    marker.popup.querySelector('.map-popup-address').click();
+    assert.equal(new URL(p.$('#notes-map-detail [data-route-provider="google"]').href).searchParams.get('destination'),`${lat},${lon}`);
+  }
   ui.setUserNotes([{...user,location:{lat:43.6,lon:39.72}}]);assert.equal(p.markers.length,1);assert.match(p.markers[0].options.icon.className,/mixed-marker/);
+  assert.equal(p.markers[0].popup.querySelectorAll('.map-route-link').length,2);
+  assert.equal(new URL(p.markers[0].popup.querySelector('[data-route-provider="google"]').href).searchParams.get('destination'),'43.6,39.72');
+  assert.equal(new URL(mapRouteLinks({lat:0,lon:-73.987654321})[0].href).searchParams.get('rtext'),'~0,-73.987654321');
+  assert.deepEqual(mapRouteLinks(null),[]);assert.deepEqual(mapRouteLinks({lat:NaN,lon:39}),[]);
   ui.filter('','user');assert.match(p.markers[0].options.icon.className,/user-marker/);ui.reset();
 });

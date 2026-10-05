@@ -411,7 +411,7 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .notes-map-toolbar button{min-height:42px;padding:10px 13px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
 .map-disclosure{font-size:12px;line-height:1.5;color:#6c8096;margin:8px 0 12px}
 .notes-map-status{font-size:13px;line-height:1.5;background:#fff5e8;border:1px solid #f0dfc5;border-radius:10px;padding:10px 12px;margin:10px 0;color:#785629}
-.notes-map-canvas{height:clamp(280px,48dvh,520px);min-height:280px;border:1px solid #d4e0ea;border-radius:14px;isolation:isolate;background:#e9eef1;font-family:inherit;z-index:0}
+.notes-map-canvas{height:clamp(320px,56dvh,620px);min-height:320px;border:1px solid #d4e0ea;border-radius:14px;isolation:isolate;background:#e9eef1;font-family:inherit;z-index:0}
 .notes-map-canvas.placing,.notes-map-canvas.placing .leaflet-interactive{cursor:crosshair}
 .notes-map-canvas .leaflet-control-attribution{font-size:10px;line-height:16px}
 .notification-map-marker{border:2px solid white;border-radius:50% 50% 50% 3px;background:#ed861d;box-shadow:0 2px 8px #112c4e55;transform-origin:center}
@@ -421,6 +421,14 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .notification-map-marker.mixed-marker{background:linear-gradient(135deg,#397db4 50%,#d7802c 50%)}
 .map-popup{font-family:inherit;color:#223e59;min-width:190px}
 .map-popup-address{display:block;text-align:left;width:100%;font-size:13px;font-weight:650;line-height:1.5;color:#174777;background:none;padding:3px 0 8px;white-space:normal}
+.map-routes{display:grid;gap:7px;padding:12px;margin:8px 0 12px;border:1px solid #dbe5ee;border-radius:10px;background:#f3f7fb}
+.map-routes strong{font-size:13px;color:#355575}
+.map-route-coordinates{font-size:11px;line-height:1.5;color:#778b9f;overflow-wrap:anywhere;user-select:text}
+.map-route-actions{display:flex;flex-wrap:wrap;gap:7px}
+.map-route-link{display:inline-flex;justify-content:center;align-items:center;flex:1;min-height:42px;padding:9px 12px;border:1px solid #cddceb;border-radius:8px;background:#fff;color:#315d86;font-size:12px;font-weight:600;white-space:nowrap;text-decoration:none}
+.map-route-link:hover{background:#eaf2fa}.map-route-link:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.map-route-link[data-route-provider=yandex]{background:#fff7e9;border-color:#ecd7b3;color:#88632d}
+.map-popup .map-routes{padding:9px}.map-popup .map-route-link{padding:8px}
 .map-note-card{display:grid;gap:5px;text-align:left;width:100%;background:#fff;padding:12px;border:1px solid #dce5ef;border-radius:10px;margin:8px 0;line-height:1.5;color:#344f6b;white-space:normal;overflow-wrap:anywhere}
 .map-note-name{font-size:13px;font-weight:650}.map-note-ids{font-size:11px;color:#6b8095}.map-note-text{font-size:13px;white-space:pre-wrap}.map-note-open{font-size:12px;color:#235b92;font-weight:600}
 .notes-map-detail,.map-unplaced{padding:16px;margin-top:16px;background:#fff;border:1px solid #dce5ef;border-radius:13px}
@@ -447,7 +455,7 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .map-user-note>.map-note-card{margin-bottom:5px}
 .user-note-address{font-size:15px;font-weight:600;color:#355575;margin-bottom:8px;overflow-wrap:anywhere}
 .user-note-dialog .notes-map-toolbar{margin-top:14px}
-.user-note-dialog .notes-map-canvas{height:330px;min-height:260px}
+.user-note-dialog .notes-map-canvas{height:clamp(340px,46dvh,440px);min-height:340px}
 .user-note-dialog .dialog-body{padding-bottom:30px}
 .user-note-coordinate-panel{padding:12px 0;color:#6a7f94;font-size:13px}
 .user-note-coordinate-panel summary{cursor:pointer;padding:7px 0}
@@ -459,10 +467,10 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .user-note-save{margin-top:14px;background:#f5e0c8;color:#87552b;border:1px solid #e5c29c;box-shadow:none}
 .user-note-save:hover{background:#ecd0af}
 .offline-action[data-clear-notifications]{display:inline-flex;align-items:center;gap:5px}
-@media(max-width:700px){.notes-filters{margin:0 17px 10px}.notes-filters select{font-size:16px}.user-note-dialog .dialog-body{padding-bottom:calc(24px + env(safe-area-inset-bottom))}.user-note-dialog .notes-map-canvas{height:300px}.user-note-dialog .dialog-header h2{font-size:20px}}
+@media(max-width:700px){.notes-filters{margin:0 17px 10px}.notes-filters select{font-size:16px}.user-note-dialog .dialog-body{padding-bottom:calc(24px + env(safe-area-inset-bottom))}.user-note-dialog .dialog-header h2{font-size:20px}}
 .notes-map-detail h3,.map-unplaced h3{margin:0 0 10px;font-size:15px;line-height:1.5;color:#264c74;overflow-wrap:anywhere}
 .map-candidate,.map-unplaced-address{display:grid;gap:4px;padding:11px 12px;margin:7px 0;width:100%;border:1px solid #dce5ef;border-radius:9px;text-align:left;background:#f7faff;color:#2b5278;font-size:13px;line-height:1.5;white-space:normal}
 .map-unplaced-address span{font-size:11px;color:#75859a}.map-place{width:100%;min-height:42px;margin-top:8px;font-size:13px}
 .map-placement-actions{display:flex;gap:8px;margin-top:10px}.map-placement-actions button{min-height:42px;font-size:13px;padding:9px 13px}
 .map-internet-hint{font-size:12px;margin-bottom:0}
-@media(max-width:600px){.notes-view-switch{margin:0 20px 12px}.notes-map-canvas{height:42dvh;min-height:280px}#notes-map-panel .notes-map-toolbar{gap:6px}#notes-map-panel .map-disclosure{font-size:11px}}
+@media(max-width:600px){.notes-view-switch{margin:0 20px 12px}.notes-map-canvas{height:52dvh;min-height:320px}#notes-map-panel .notes-map-toolbar{gap:6px}#notes-map-panel .map-disclosure{font-size:11px}}

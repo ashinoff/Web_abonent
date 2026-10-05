@@ -1,5 +1,6 @@
 import { groupMapNotes,visibleMapGroups,exactCandidate,validLocation,readMapLocations,saveMapLocation } from './notes-map-data.js';
 import { loadMapLibrary } from './map-library.js';
+import { createMapRoutes } from './map-routes.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const number = value => new Intl.NumberFormat('ru-RU').format(value);
@@ -42,6 +43,7 @@ export function initNotesMapUI({ request,openRecord,openUserNote=()=>{},deleteUs
     cancelPlacement(); selected = key; const group = currentGroup(key); if (!group) return;
     details.replaceChildren(); details.hidden = false;
     const heading = document.createElement('h3'); heading.textContent = group.address || 'Адрес не указан'; details.append(heading);
+    const routes=createMapRoutes(group.location);if(routes)details.append(routes);
     const visibleGroup = visibleGroups([group])[0];
     for (const note of visibleGroup?.notes || []) details.append(recordButton(note));
     if (group.candidates.length && !group.location) {
@@ -87,6 +89,7 @@ export function initNotesMapUI({ request,openRecord,openUserNote=()=>{},deleteUs
       const kind=types.size>1?'mixed':[...types][0];
       const marker = L.marker([p.lat,p.lon],{ title:atPoint.map(group => group.address).join(' · '),icon:L.divIcon({ className:`notification-map-marker ${kind}-marker`,html:`<span>${number(count)}</span>`,iconSize:[34,34],iconAnchor:[17,34] }) });
       const popup = document.createElement('div'); popup.className = 'map-popup';
+      popup.append(createMapRoutes(p));
       atPoint.forEach(group => {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'map-popup-address'; button.textContent = group.address || 'Адрес не указан';
         button.addEventListener('click', () => { selectGroup(group.key); details.scrollIntoView({ block:'nearest',behavior:'smooth' }); }); popup.append(button);
