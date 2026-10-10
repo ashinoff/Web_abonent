@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSource } from './public/source.js';
+import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
 const compress = promisify(gzip);
@@ -48,12 +49,14 @@ export function preparationLimits(containerMB) {
   const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
   return { heapMB, childMB, combinedMB, packageMB };
 }
-function runLimitedChild(args, containerMB) {
+function runLimitedChild(args, containerMB,signal) {
   const { heapMB, childMB, combinedMB } = preparationLimits(containerMB);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [`--max-old-space-size=${heapMB}`, childPath, ...args],
       { stdio: ['ignore','ignore','pipe'], env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
     let stderr = '', reason = null, checking = false;
+    const abort=()=>{reason='Подготовка остановлена администратором.';child.kill('SIGKILL');};
+    signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
     const timeout = setTimeout(() => { reason = 'Подготовка Excel превысила 120 секунд.'; child.kill('SIGKILL'); }, 120000);
     // V8 heap limits do not cover workbook buffers and native allocations.
@@ -72,9 +75,10 @@ function runLimitedChild(args, containerMB) {
       finally { checking = false; }
     }, 25);
     child.on('error', error => { reason ||= error.message; });
-    child.on('close', (code, signal) => {
+    child.on('close', (code, childSignal) => {
+      signal?.removeEventListener('abort',abort);
       clearTimeout(timeout); clearInterval(monitor);
-      if (reason || code !== 0) reject(new Error(reason || stderr.trim() || `Подготовка завершилась (${signal || code}).`));
+      if (reason || code !== 0) reject(new Error(reason || stderr.trim() || `Подготовка завершилась (${childSignal || code}).`));
       else resolve();
     });
   });
@@ -86,19 +90,24 @@ const validDownloadUrl = value => {
 export const revisionOf = meta => JSON.stringify([meta.md5 || meta.sha256 || '', meta.modified || '', meta.size]);
 
 export function createPreparedService({ source, store, yandex }) {
-  const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map();
+  const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map(),active=new Map();
+  const allowed=(path,expected)=>store.assertLoadAllowed?.(source,path,expected);
+  async function report(path,role,error){
+    const issue=preparationIssue(error);if(['res_blocked','res_changed'].includes(issue.code))return;
+    await store.appendAdminEvent?.(source,{resPath:resScope(path),category:'preparation',...issue}).catch(()=>{});
+  }
   let queue = Promise.resolve(), responseQueue = Promise.resolve(), syncing = false, preparing = false;
   const responseFrom = async (entry, stale = false) => ({ revision: entry.revision,
     payload: await compress(entry.json ?? JSON.stringify(entry.data)), updated_at: entry.updated_at, stale });
   function target(path, suffix = '') {
     const url = new URL(api + suffix); url.searchParams.set('public_key', source); url.searchParams.set('path', path); return url;
   }
-  async function download(path, size, destination) {
-    const { href } = await (await yandex(target(path, '/download'))).json();
+  async function download(path, size, destination,signal) {
+    signal.throwIfAborted();const { href } = await (await yandex(target(path, '/download'),{signal})).json();signal.throwIfAborted();
     let address = href;
     for (let i = 0; i < 4; i++) {
       if (!validDownloadUrl(address)) throw new Error('Яндекс Диск вернул неподдерживаемый адрес скачивания.');
-      const response = await fetch(address, { redirect: 'manual', signal: AbortSignal.timeout(90000) });
+      const response = await fetch(address, { redirect: 'manual', signal: AbortSignal.any([signal,AbortSignal.timeout(90000)]) });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (!location) throw new Error('Адрес перенаправления отсутствует.');
@@ -112,20 +121,21 @@ export function createPreparedService({ source, store, yandex }) {
         bytes += chunk.length;
         callback(bytes > maxBytes ? new Error('Размер Excel превышает 40 МБ.') : null, chunk);
       } });
-      await pipeline(Readable.fromWeb(response.body), limiter, createWriteStream(destination));
+      await pipeline(Readable.fromWeb(response.body), limiter, createWriteStream(destination),{signal});
       return;
     }
     throw new Error('Слишком много перенаправлений при скачивании.');
   }
-  async function prepare(directory, role, filename) {
+  async function prepare(directory, role, filename,signal) {
     try {
       const path = join(directory, 'workbook');
       const output = join(directory, 'package.json');
       const { containerMB } = await memoryBudget();
-      await runLimitedChild([path, output, role, filename], containerMB);
+      await runLimitedChild([path, output, role, filename], containerMB,signal);
+      signal.throwIfAborted();
       const { packageMB } = preparationLimits(containerMB);
       if ((await stat(output)).size > packageMB * 1048576) throw new Error(`Пакет Excel превышает лимит ${packageMB} МБ.`);
-      return readFile(output, 'utf8');
+      return await readFile(output, 'utf8');
     } catch (error) {
       if (/heap out of memory|allocation failed/i.test(error.message || ''))
         throw new Error('Файл превышает доступный лимит памяти подготовки Excel.');
@@ -134,50 +144,56 @@ export function createPreparedService({ source, store, yandex }) {
   }
   const readMeta = (path, role) => store.getMeta ? store.getMeta(source, path, role) : store.get(source, path, role);
   async function load(path, role) {
-    const key = role + ':' + path;
+    const policy=await allowed(path);
+    const key = role + ':' + path+':'+JSON.stringify(policy?[policy.globalGeneration,policy.generation]:[]);
     if (!pending.has(key)) {
+      const controller=new AbortController();active.set(key,{controller,path});
       const work = (async () => {
         const previous = await readMeta(path, role);
         let meta;
-        try { meta = await (await yandex(target(path))).json(); }
-        catch (error) { if (previous) return { ...previous, stale: true }; throw error; }
+        try { meta = await (await yandex(target(path),{signal:controller.signal})).json(); }
+        catch (error) { await allowed(path,policy);await report(path,role,error);if (previous) return { ...previous, stale: true }; throw error; }
+        await allowed(path,policy);controller.signal.throwIfAborted();
         if (meta.type !== 'file' || !/\.xlsx?$/i.test(meta.name || '') || !Number.isFinite(meta.size) || meta.size > maxBytes) throw new Error('Файл Excel недоступен или превышает 40 МБ.');
         const revision = revisionOf(meta);
         if (previous?.revision === revision) {
-          await store.markFile?.(source, path, role, 'ready', previous.updated_at);
+          await store.markFile?.(source, path, role, 'ready', previous.updated_at,policy);
           return previous;
         }
         // A single Excel parse at a time prevents 2–5 concurrent visitors from
         // multiplying peak memory during a cache miss.
         const task = async () => {
+          await allowed(path,policy);controller.signal.throwIfAborted();
           const current = await readMeta(path, role);
           if (current?.revision === revision) {
-            await store.markFile?.(source, path, role, 'ready', current.updated_at);
+            await store.markFile?.(source, path, role, 'ready', current.updated_at,policy);
             return current;
           }
           const directory = await mkdtemp(join(tmpdir(), 'abonent-prepare-'));
           let json;
           try {
-            await download(path, meta.size, join(directory, 'workbook'));
-            json = await prepare(directory, role, meta.name);
+            await download(path, meta.size, join(directory, 'workbook'),controller.signal);
+            await allowed(path,policy);json = await prepare(directory, role, meta.name,controller.signal);
           } catch (error) {
             await rm(directory, { recursive: true, force: true });
             throw error;
           }
-          if (store.putRaw) await store.putRaw(source, path, role, revision, json);
-          else await store.put(source, path, role, revision, JSON.parse(json));
-          await store.markFile?.(source, path, role, 'ready', new Date());
+          await allowed(path,policy);controller.signal.throwIfAborted();
+          if (store.putRaw) await store.putRaw(source, path, role, revision, json,policy);
+          else await store.put(source, path, role, revision, JSON.parse(json),policy);
+          await store.markFile?.(source, path, role, 'ready', new Date(),policy);
           return { revision, updated_at: new Date() };
         };
         const next = queue.then(task); queue = next.catch(() => {});
-        try { return await next; } catch (error) { if (previous) return { ...previous, stale: true }; throw error; }
-      })().finally(() => pending.delete(key));
+        try { return await next; } catch (error) {await allowed(path,policy);await report(path,role,error);if (previous) return { ...previous, stale: true }; throw error; }
+      })().finally(() => {pending.delete(key);active.delete(key);});
       pending.set(key, work);
     }
     return pending.get(key);
   }
-  function fromDatabase(path, role, etag) {
-    const key = JSON.stringify([path, role, etag]);
+  async function fromDatabase(path, role, etag) {
+    const policy=await allowed(path);
+    const key = JSON.stringify([path, role, etag,policy?.generation,policy?.globalGeneration]);
     if (!pendingResponses.has(key)) {
       const work = (async () => {
         let stale = false;
@@ -190,16 +206,18 @@ export function createPreparedService({ source, store, yandex }) {
         }
         if (etag && store.getRevision) {
           const revision = await store.getRevision(source, path, role);
-          if (revision && etag === `"${Buffer.from(revision).toString('base64url')}"`) return { revision, unchanged: true };
+          await allowed(path,policy);if (revision && etag === `"${Buffer.from(revision).toString('base64url')}"`) return { revision, unchanged: true };
         }
         if (store.getMeta && !meta) await load(path, role);
         // Database JSON and compression are large; bound them to one response
         // at a time even when several different RES are opened together.
         const next = responseQueue.then(async () => {
+          await allowed(path,policy);
           const read = store.getJson || store.get;
           const saved = await read.call(store, source, path, role);
           const entry = saved || (await load(path, role), await read.call(store, source, path, role));
-          return responseFrom(entry, stale || Boolean(entry.stale));
+          await allowed(path,policy);if(!entry)throw new Error('Подготовленный пакет недоступен.');
+          const result=await responseFrom(entry, stale || Boolean(entry.stale));await allowed(path,policy);return result;
         });
         responseQueue = next.catch(() => {});
         return next;
@@ -232,11 +250,18 @@ export function createPreparedService({ source, store, yandex }) {
       for (const enterprise of enterprises) {
         let resources;
         try { resources = (await list(enterprise.path)).filter(x => x.type === 'dir'); }
-        catch (error) { partialError ||= error; console.warn(`Каталог ${enterprise.path}: ${error.message}`); continue; }
+        catch (error) { partialError ||= error; await report(enterprise.path,'catalog',error);console.warn(`Каталог ${enterprise.path}: ${error.message}`); continue; }
         for (const res of resources) {
+          const policy=await store.getLoadPolicy?.(source,res.path);
+          if(policy?.blocked){
+            const old=previousFolders.get(res.path)||{};
+            await store.putFolder?.(source,{path:res.path,name:res.name,enterprisePath:enterprise.path,enterpriseName:enterprise.name},
+              Object.fromEntries(['registry','consumption','incoming'].map(role=>[role,{...old[role],state:'blocked'}])),policy);
+            seen.push(res.path);continue;
+          }
           let files;
           try { files = await list(res.path); }
-          catch (error) { partialError ||= error; console.warn(`Каталог ${res.path}: ${error.message}`); continue; }
+          catch (error) { partialError ||= error;await report(res.path,'catalog',error); console.warn(`Каталог ${res.path}: ${error.message}`); continue; }
           const statuses = {};
           for (const role of ['registry','consumption','incoming']) {
             const file = findSource(files, role);
@@ -254,17 +279,18 @@ export function createPreparedService({ source, store, yandex }) {
                 size: file.size, modified: file.modified, updatedAt: result.updated_at };
             } catch (error) {
               statuses[role] = { state: 'error', file: file.name, path: file.path, size: file.size, modified: file.modified };
+              Object.assign(statuses[role],preparationIssue(error));
               console.warn(`Подготовка ${role} в ${res.path}: ${error.message}`);
             }
           }
           await store.putFolder?.(source, { path: res.path, name: res.name,
-            enterprisePath: enterprise.path, enterpriseName: enterprise.name }, statuses);
+            enterprisePath: enterprise.path, enterpriseName: enterprise.name }, statuses,policy);
           seen.push(res.path);
         }
       }
       if (seen.length && !partialError) await store.pruneFolders?.(source, seen);
       if (partialError) throw partialError;
-    } finally { syncing = false; }
+    } catch(error){await report('/','catalog',error);throw error;} finally { syncing = false; }
   }
   async function prepareNext() {
     if (syncing || preparing || !store.listFolders || !store.putFolder) return false;
@@ -272,6 +298,8 @@ export function createPreparedService({ source, store, yandex }) {
     try {
       const folders = await store.listFolders(source);
       for (const folder of folders) {
+        if(folder.load_blocked||(await store.getLoadPolicy?.(source,folder.res_path))?.blocked)continue;
+        const policy=await store.getLoadPolicy?.(source,folder.res_path);
         for (const role of ['registry', 'consumption', 'incoming']) {
           const status = folder.statuses?.[role];
           if (status?.state !== 'pending' || !status.path) continue;
@@ -281,15 +309,19 @@ export function createPreparedService({ source, store, yandex }) {
             statuses[role] = { ...status, state: result.stale ? 'stale' : 'ready', updatedAt: result.updated_at };
           } catch (error) {
             statuses[role] = { ...status, state: 'error' };
+            Object.assign(statuses[role],preparationIssue(error));
             console.warn(`Подготовка ${role} в ${folder.res_path}: ${error.message}`);
           }
           await store.putFolder(source, { path: folder.res_path, name: folder.res_name,
-            enterprisePath: folder.enterprise_path, enterpriseName: folder.enterprise_name }, statuses);
+            enterprisePath: folder.enterprise_path, enterpriseName: folder.enterprise_name }, statuses,policy);
           return true;
         }
       }
       return false;
     } finally { preparing = false; }
   }
-  return { load, fromDatabase, syncAll, prepareNext };
+  return { load, fromDatabase, syncAll, prepareNext,
+    status:()=>({syncing,preparing,activeFiles:active.size}),
+    cancelRes(path){for(const item of active.values())if(path==='/'||resScope(item.path)===path)item.controller.abort();},
+  };
 }

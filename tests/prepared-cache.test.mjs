@@ -23,6 +23,17 @@ function network(t, version = '1') {
   t.mock.method(globalThis, 'fetch', async url => response(new URL(url).searchParams.get('role'), version));
 }
 
+test('server access denials and a cleared RES never fall back to a saved online copy', async t => {
+  network(t);await fetchPrepared({source,...registry});
+  for(const [status,code] of [[401,'auth_required'],[403,'res_blocked'],[409,'res_changed']]){
+    t.mock.method(globalThis,'fetch',async()=>Response.json({code,error:'Доступ закрыт.'},{status}));
+    await assert.rejects(fetchPrepared({source,...registry}),error=>error.status===status&&error.code===code);
+  }
+  t.mock.method(globalThis,'fetch',()=>{throw new Error('Offline selection must not use the network.');});
+  assert.equal((await fetchPrepared({source,...registry,offlineOnly:true})).offline,true);
+  assert.deepEqual(folderSources({load_blocked:true,statuses:{registry}}),[]);
+});
+
 test('existing v1 copies survive metadata migration and can be listed without parsing JSON', async () => {
   const request = indexedDB.open('abonent-prepared-v1', 1);
   request.onupgradeneeded = () => request.result.createObjectStore('packages');

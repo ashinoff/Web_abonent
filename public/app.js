@@ -12,9 +12,11 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=12';
+import { listOfflineCopies } from './prepared-cache.js?v=13';
 import { createUserNotifications } from './user-notifications.js';
 import { initUserNoteEditor } from './user-note-editor.js';
+import { initAccountUI } from './account-ui.js';
+import { initAdminUI } from './admin-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,6 +29,16 @@ const pointText = fields => [fields.point || fields.pointNumber, fields.pointNam
 const pointLine = record => `<div class="quick-point"><span class="number-label">Точка учёта</span><strong>${esc(pointText(record.fields))}</strong></div>`;
 const initial = window.ABONENT_CONFIG || {};
 let config = { ...initial }, proxy = false, folders = [], selectedFolder = null, selectedFile = null;
+let accountUI=null,authFetchInstalled=false;
+function watchAuthentication(){
+  if(authFetchInstalled||!config.auth?.enabled)return;authFetchInstalled=true;
+  const original=globalThis.fetch.bind(globalThis);
+  globalThis.fetch=async(...args)=>{
+    const response=await original(...args),url=new URL(typeof args[0]==='string'||args[0] instanceof URL?args[0]:args[0].url,location.href);
+    if(response.status===401&&url.origin===location.origin&&url.pathname.startsWith('/api/')&&!url.pathname.startsWith('/api/auth/'))window.dispatchEvent(new Event('abonent-auth-required'));
+    return response;
+  };
+}
 let resFolders = [], selectedRes = null, resState = 'idle';
 let sourceState = 'loading', diskState = 'checking', directoryState = 'loading', folderRead = null;
 let consumptionFile = null, consumptionState = 'idle', consumptionError = '', registryState = 'idle', busyText = '';
@@ -49,11 +61,11 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=12', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=13', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
-    worker.onmessage = ({ data }) => { const p = requests.get(data.id); if (!p) return; clearTimeout(p.timer); requests.delete(data.id); data.error ? p.reject(new Error(data.error)) : p.resolve(data.result); };
+    worker.onmessage = ({ data }) => { const p = requests.get(data.id); if (!p) return; clearTimeout(p.timer); requests.delete(data.id); if(data.status===401)window.dispatchEvent(new Event('abonent-auth-required'));data.error ? p.reject(Object.assign(new Error(data.error),{status:data.status,code:data.code})) : p.resolve(data.result); };
     worker.onerror = () => { resetWorker(new Error('Не удалось запустить обработку Excel. Перезагрузите страницу.')); };
   }
   return worker;
@@ -80,7 +92,7 @@ function resetMonthly(error = new Error('Операция отменена.')) {
 function monthlyRPC(action, payload = {}, transfer = []) {
   if (!monthlyWorker) {
     monthlyWorker = createWorkbookWorker();
-    monthlyWorker.onmessage = ({ data }) => { const p=monthlyRequests.get(data.id); if (!p) return; clearTimeout(p.timer); monthlyRequests.delete(data.id); data.error ? p.reject(new Error(data.error)) : p.resolve(data.result); };
+    monthlyWorker.onmessage = ({ data }) => { const p=monthlyRequests.get(data.id); if (!p) return; clearTimeout(p.timer); monthlyRequests.delete(data.id);if(data.status===401)window.dispatchEvent(new Event('abonent-auth-required')); data.error ? p.reject(Object.assign(new Error(data.error),{status:data.status,code:data.code})) : p.resolve(data.result); };
     monthlyWorker.onerror = () => { resetMonthly(new Error('Не удалось обработать файл потребления. Повторите загрузку.')); consumptionState='error'; renderIndicators(); };
   }
   return new Promise((resolve,reject) => {
@@ -97,7 +109,7 @@ function incomingRPC(action, payload, transfer = [], signal = loads.signal) {
     const cancel = () => finish(signal.reason);
     const timer = setTimeout(() => finish(new Error('Чтение приёма заняло слишком много времени. Повторите позже.')), 300000);
     signal.addEventListener('abort', cancel, { once: true });
-    w.onmessage = ({ data }) => finish(data.error ? new Error(data.error) : null, data.result);
+    w.onmessage = ({ data }) => {if(data.status===401)window.dispatchEvent(new Event('abonent-auth-required'));finish(data.error ? Object.assign(new Error(data.error),{status:data.status,code:data.code}) : null, data.result);};
     w.onerror = () => finish(new Error('Не удалось прочитать приём.'));
     w.postMessage({ id: 1, action, payload }, transfer);
   });
@@ -208,7 +220,7 @@ async function selectOfflineRes(i) {
 function renderIndicators() {
   notesUI.update(summary, busy);
   userNotes.changeContext();
-  const canClear=Boolean(selectedRes && proxy && config.prepared && !isDemo && currentSource?.type !== 'local');
+  const canClear=Boolean((accountUI?.isAdmin??true) && selectedRes && proxy && config.prepared && !isDemo && currentSource?.type !== 'local');
   $('#current-res-notifications').hidden=!canClear;
   $('#current-res-notifications-name').textContent=selectedRes?.name || '';
   $('#clear-res-notifications').disabled=!canClear || !navigator.onLine;
@@ -265,7 +277,8 @@ async function readConfiguration(signal = loads.signal) {
       if (!loads.current(signal)) return;
       if (remote.proxy !== true) throw new Error('Неизвестный ответ сервера.');
       proxy = true; config = { ...initial, ...remote, publicUrl: remote.publicUrl || '' };
-      try { localStorage.setItem('abonent.server.v1', JSON.stringify({ publicUrl: config.publicUrl, prepared: config.prepared })); } catch {}
+      watchAuthentication();
+      try { localStorage.setItem('abonent.server.v1', JSON.stringify({ publicUrl: config.publicUrl, prepared: config.prepared,auth:config.auth })); } catch {}
     } else if (response.status === 404 || response.ok) {
       if (!loads.current(signal)) return;
       proxy = false; config = { ...initial };
@@ -276,6 +289,7 @@ async function readConfiguration(signal = loads.signal) {
     if (!loads.current(signal)) return;
     try {
       const saved = JSON.parse(localStorage.getItem('abonent.server.v1') || 'null');
+      if(saved?.auth)config.auth=saved.auth;
       if (saved?.publicUrl && prefs.root === saved.publicUrl && saved.prepared) {
         proxy = true; config = { ...initial, ...saved }; sourceState = 'ready'; directoryOffline = true;
       } else sourceState = 'error';
@@ -307,7 +321,7 @@ async function apiRequest(action, path = '/', offset = 0, legacy = false, signal
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const text = { 404: 'Папка не найдена. Проверьте ссылку и доступ.', 403: 'Доступ к файлу ограничен. Разрешите скачивание по ссылке.', 429: 'Слишком много запросов к Диску. Повторите позже.', 413: 'Файл превышает 40 МБ.' };
-    throw new Error(body.error && !/^[A-Za-z]+Error$/.test(body.error) ? body.error : text[response.status] || 'Не удалось получить данные Яндекс Диска.');
+    throw Object.assign(new Error(body.error && !/^[A-Za-z]+Error$/.test(body.error) ? body.error : text[response.status] || 'Не удалось получить данные Яндекс Диска.'),{status:response.status,code:body.code});
   }
   return response;
 }
@@ -328,6 +342,7 @@ async function listFolder(path, legacy = false, signal = loads.signal) {
     return all;
   } catch (error) {
     signal.throwIfAborted();
+    if([401,403].includes(error.status)||error.code==='res_changed')throw error;
     let saved; try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
     const copies = config.prepared ? await listOfflineCopies(rootUrl()).catch(() => []) : [];
     signal.throwIfAborted();
@@ -550,6 +565,7 @@ async function downloadFile({ keepSettings = false, signal = loads.signal, offli
         return;
       } catch (error) {
         if (!loads.current(signal)) return;
+        if ([401,403].includes(error.status) || error.code==='res_changed')throw error;
         if (offlineOnly || (selected.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
       }
@@ -580,6 +596,7 @@ async function readIncomingFile(signal = loads.signal, offlineOnly = false) {
         incomingInfo = info; incomingState = 'ready'; setBusy(false); return;
       } catch (error) {
         if (!loads.current(signal) || op !== operation) return;
+        if ([401,403].includes(error.status) || error.code==='res_changed')throw error;
         if (offlineOnly || (file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
         // A small incompatible workbook can still use local Excel reading.
@@ -609,6 +626,7 @@ async function readConsumptionFile(signal = loads.signal, offlineOnly = false) {
         consumptionInfo = info; consumptionState = 'ready'; setBusy(false); return;
       } catch (error) {
         if (!loads.current(signal) || op !== operation) return;
+        if ([401,403].includes(error.status) || error.code==='res_changed')throw error;
         if (offlineOnly || (file.size || 0) > 8 * 1048576 || error.message.startsWith('MEMORY_LIMIT:'))
           throw new Error(error.message.replace(/^MEMORY_LIMIT:\s*/, ''));
         // A small incompatible workbook can still use local Excel reading.
@@ -897,7 +915,7 @@ function notificationContext() {
   const endpoint=proxy && config.prepared ? new URL('./api/user-notifications',location.href).href : null;
   return {source:isDemo?'demo':local?'local:'+currentSource.name:offlineRoot(),
     resPath:isDemo?'/Пример/Демонстрация':local?'/Устройство/'+currentSource.name:selectedRes?.path || '',
-    shared:Boolean(endpoint && selectedRes && !isDemo && !local),endpoint,autoSync:!usingOfflineCopy};
+    shared:Boolean(endpoint && selectedRes && !isDemo && !local),endpoint,autoSync:!usingOfflineCopy&&(!accountUI?.enabled||Boolean(accountUI.user))};
 }
 function mapContext() {return {
   scope:JSON.stringify([currentSource?.type,rootUrl(),selectedRes?.path || currentSource?.res || '',currentSource?.fileInfo?.path || currentSource?.name || '']),
@@ -922,7 +940,7 @@ async function deleteUserNote(note) {
   try{await userNotes.remove(note.id);toast('Удаление отметки сохранено.');}catch(error){toast(error.message);}
 }
 async function clearNotifications(resPath,name,source=rootUrl()) {
-  if(source!==rootUrl())return false;
+  if(source!==rootUrl()||!accountUI.isAdmin)return false;
   if(!window.confirm(`Очистить все пользовательские уведомления «${name}» у всех сотрудников? Примечания из реестра сохранятся.`))return false;
   await userNotes.clear(resPath,source);toast('Пользовательские уведомления РЭС очищены.');return true;
 }
@@ -931,8 +949,10 @@ const notesUI=initNotesUI({request:rpc,openDialog,openRecord,openUserNote,delete
 });
 userNotes.subscribe(data=>notesUI.setUserNotes(data));
 const loadMap = initLoadMap(rootUrl, {
+  canClearNotifications:()=>accountUI?.isAdmin??true,
   onClearNotifications:(source,folder)=>clearNotifications(folder.res_path,folder.res_name,source),
   getFiles(folder) {
+    if(folder.load_blocked)return [];
     const files = folderSources(folder);
     if (folder.res_path !== selectedRes?.path || filesState !== 'ready') return files;
     return ['registry', 'consumption', 'incoming'].flatMap(role => {
@@ -957,7 +977,9 @@ const diagnosticsUI = initDiagnosticsUI({ openDialog, showSettings, context: () 
   sourceState, registryState, registryError, filesState, filesError, selectedRes: selectedRes?.name,
   selectedFile: selectedFile?.name, pending: Boolean(pending), offline: !navigator.onLine, serverMode: proxy,
 }) });
-const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings, onMapOpen: loadMap.refresh });
+accountUI=initAccountUI({canRefresh:()=>!usingOfflineCopy,onChange:({enabled,user})=>{if(enabled&&!user){if(busy)stopLoading();loads.start();clearDataset();adminUI.reset();}renderIndicators();},onLogout:()=>{adminUI.reset();clearDataset();}});
+const adminUI=initAdminUI({account:()=>accountUI.user,onDatabaseChanged:()=>{if(busy)stopLoading();void loadMap.refresh();directoryState='idle';folderRead=null;}});
+const analysisUI = initAnalysisUI({ request: monthlyRPC, isReady: () => consumptionState === 'ready', getIncoming: () => ({ ready: incomingState === 'ready', name: incomingFile?.name }), showConnection: showSettings, onMapOpen: loadMap.refresh,onAdminOpen:adminUI.refresh });
 $('#record-body').addEventListener('click', e => {
   if(e.target.closest('[data-mark-consumer]') && activeRecord){void userNoteEditor.open(activeRecord);return;}
   if (e.target.closest('#consumer-analyze') && activeRecord) analysisUI.openConsumer(activeRecord.fields.account, { point: activeRecord.fields.point, pointNumber: activeRecord.fields.pointNumber, pointName: activeRecord.fields.pointName });
@@ -991,6 +1013,7 @@ document.addEventListener('click', e => {
 });
 document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => dialogControls.get(button.closest('dialog').id).dismiss()));
 document.querySelectorAll('dialog').forEach(dialog => {
+  if(dialog.id==='login-dialog')return;
   const controls = attachDialogSwipe(dialog, { close: () => dialog.close(), back: () => dialog.id === 'analysis-dialog' ? analysisUI.back() : dialog.id === 'tp-dialog' ? showTPPicker() : dialog.close(), canGoBack: () => dialog.id === 'analysis-dialog' ? analysisUI.canGoBack() : dialog.id === 'tp-dialog' ? Boolean(tpViewKey) : dialog.id === 'record-dialog' && Boolean(recordContext.parent && $('#' + recordContext.parent).open), prepareBack: dialog.id === 'tp-dialog' ? prepareTPReturn : null });
   dialogControls.set(dialog.id, controls);
   dialog.addEventListener('cancel', e => { e.preventDefault(); controls.dismiss(); });
@@ -1076,6 +1099,7 @@ if ('serviceWorker' in navigator) {
 }
 const startupSignal = loads.signal;
 await readConfiguration(startupSignal);
+await accountUI.start(config.auth);
 if (proxy && config.prepared && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('./service-worker.js', { updateViaCache:'none' }).catch(() => navigator.serviceWorker.getRegistration()).then(registration => {
     if (registration?.update) registration.update().catch(() => {});

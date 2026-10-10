@@ -133,7 +133,7 @@ async function networkPackage({ path, role, saved, signal, fresh = false }) {
   if (response.status === 304 && saved) return { ...saved, stale, savedAt: Date.now() };
   if (!response.ok) {
     const problem = await response.json().catch(() => ({}));
-    throw new Error((problem.code === 'memory_limit' ? 'MEMORY_LIMIT: ' : '') + (problem.error || 'Подготовленные данные пока недоступны.'));
+    throw Object.assign(new Error((problem.code === 'memory_limit' ? 'MEMORY_LIMIT: ' : '') + (problem.error || 'Подготовленные данные пока недоступны.')),{status:response.status,code:problem.code});
   }
   if (!response.headers.get('content-type')?.includes('application/json') || !response.headers.get('X-Prepared-Revision'))
     throw new Error('Неизвестный ответ сервера при сохранении данных.');
@@ -168,7 +168,7 @@ export async function fetchPrepared({ source, path, role, signal, offlineOnly = 
     return { data, offline: false, cached, savedAt: value.savedAt, revision: value.revision, stale: value.stale };
   } catch (error) {
     signal?.throwIfAborted();
-    if (error.name === 'AbortError' || !saved || await generation(source, resPath, signal).catch(() => null) !== expected) throw error;
+    if (error.name === 'AbortError' || [401,403].includes(error.status) || error.code==='res_changed' || !saved || await generation(source, resPath, signal).catch(() => null) !== expected) throw error;
     return { data: JSON.parse(await saved.body.text()), offline: true, cached: true, savedAt: saved.savedAt, revision: saved.revision, stale: saved.stale };
   }
 }

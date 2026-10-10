@@ -33,7 +33,7 @@ export function validateNotification(value) {
     location:{ lat:value.location.lat, lon:value.location.lon, precision:'manual' } };
 }
 
-export function createNotificationsHandler({ source, store, sendJson }) {
+export function createNotificationsHandler({ source, store, sendJson,canClear=()=>true }) {
   return async (req, res, url) => {
     if (!['GET','POST','DELETE'].includes(req.method)) { sendJson(res,405,{ error:'Метод не поддерживается.' }); return; }
     if (!source || !store?.listUserNotifications) { sendJson(res,503,{ error:'Общие уведомления доступны после подключения базы и источника РЭС.' }); return; }
@@ -50,6 +50,7 @@ export function createNotificationsHandler({ source, store, sendJson }) {
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(k => !['resPath','generation','notification','id'].includes(k))) throw fail('Некорректный запрос.');
       }
       const path = notificationRes(req.method === 'GET' ? url.searchParams.get('res') : body.resPath);
+      await store.assertLoadAllowed?.(source,path);
       // Scope and source are server-controlled; no caller can select another Disk.
       if (!(await store.listFolders(source)).some(folder => folder.res_path === path)) throw fail('Этот РЭС отсутствует в карте базы.',404,'res_not_found');
       let data;
@@ -58,7 +59,7 @@ export function createNotificationsHandler({ source, store, sendJson }) {
         const generation = notificationGeneration(body.generation);
         if (req.method === 'POST') data = await store.addUserNotification(source,path,generation,validateNotification(body.notification));
         else if (body.id !== undefined) data = await store.deleteUserNotification(source,path,generation,notificationId(body.id));
-        else data = await store.clearUserNotifications(source,path,generation);
+        else {if(!canClear(req))throw fail('Требуются права администратора для очистки всех уведомлений.',403,'forbidden');data = await store.clearUserNotifications(source,path,generation);}
       }
       sendJson(res,200,data);
     } catch (error) {

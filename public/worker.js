@@ -7,7 +7,7 @@ self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=12');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=13');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');
@@ -110,5 +110,5 @@ self.onmessage = async ({ data }) => {
       if (!record) throw new Error('Запись не найдена.');
       self.postMessage({ id, result: { ...record, labels: sheets.find(s => s.sheet === record.sheet).layout.labels } });
     }
-  } catch (error) { self.postMessage({ id, error: error.message || 'Не удалось прочитать реестр.' }); }
+  } catch (error) { self.postMessage({ id, error: error.message || 'Не удалось прочитать реестр.',status:error.status,code:error.code }); }
 };

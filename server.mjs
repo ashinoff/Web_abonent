@@ -10,6 +10,9 @@ import { createPreparedStore } from './prepared-store.mjs';
 import { createPreparedService, preparationMemory } from './prepared-service.mjs';
 import { createMapGeocoder } from './map-geocoder.mjs';
 import { createNotificationsHandler } from './user-notifications.mjs';
+import { createAccessControl,createAdminHandler } from './access-control.mjs';
+import { resScope } from './admin-store.mjs';
+import { superAdminConfig } from './accounts.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -58,8 +61,8 @@ function preparedDirectory(folders, path, offset) {
   return { type:'dir',path,_embedded:{items:items.slice(offset,offset+100),total:items.length} };
 }
 function sendJson(res, status, value) { res.writeHead(status, { 'Content-Type': types['.json'], 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); }
-async function yandex(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(25000), redirect: 'error' });
+async function yandex(url,{signal}={}) {
+  const response = await fetch(url, { signal: signal?AbortSignal.any([signal,AbortSignal.timeout(25000)]):AbortSignal.timeout(25000), redirect: 'error' });
   if (!response.ok) {
     const messages = { 404: 'Папка или файл не найдены. Проверьте публичную ссылку.', 403: 'Яндекс Диск запретил скачивание. Проверьте доступ по ссылке.', 429: 'Яндекс Диск временно ограничил запросы. Повторите чуть позже.' };
     throw Object.assign(new Error(messages[response.status] || 'Не удалось получить ответ Яндекс Диска.'), { status: response.status === 404 ? 404 : 502, upstreamStatus: response.status });
@@ -73,8 +76,9 @@ function authorized(req) {
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 export function createServer(options = {}) {
+  const env=options.env||process.env;
   // Amvera injects this once for the whole application, not separately per device.
-  const configuredUrl = (process.env.YANDEX_PUBLIC_URL || '').trim();
+  const configuredUrl = (env.YANDEX_PUBLIC_URL || '').trim();
   const configured = validPublicUrl(configuredUrl);
   const key = configured ? new URL(configuredUrl).origin + new URL(configuredUrl).pathname : '';
   // Coalesce only simultaneous metadata calls. No file contents or subscriber
@@ -88,20 +92,33 @@ export function createServer(options = {}) {
     }
     return pendingMetadata.get(key);
   }
-  const store = options.preparedStore || createPreparedStore();
+  const store = options.preparedStore || createPreparedStore(env);
   const prepared = store && createPreparedService({ source: key, store, yandex });
   const geocoder = options.mapGeocoder || createMapGeocoder();
-  const notifications = createNotificationsHandler({ source:key,store,sendJson });
+  const access=createAccessControl({env,store,sendJson});
+  const notifications = createNotificationsHandler({ source:key,store,sendJson,canClear:req=>!access.enabled||['admin','superadmin'].includes(req.account?.role) });
   let databaseConnected = Boolean(store && !store.ready);
   let syncStatus = { state: 'waiting', checkedAt: null, issue: null };
+  const rawDownloads=new Map();
+  const admin=createAdminHandler({store,source:key,access,prepared,sendJson,state:()=>({sync:syncStatus,preparation:prepared?.status()}),
+    cancelRes:path=>{prepared?.cancelRes(path);for(const [controller,file]of rawDownloads)if(path==='/'||resScope(file)===path)controller.abort();},
+    async refreshCatalog(){
+      syncStatus={state:'running',checkedAt:new Date().toISOString(),issue:null};
+      try{await prepared.syncAll({prepare:false});syncStatus={state:'ready',checkedAt:new Date().toISOString(),issue:null};}
+      catch(error){syncStatus={state:'error',checkedAt:new Date().toISOString(),issue:sourceIssue(error)};throw error;}
+    },
+  });
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self' https://*.yandex.net https://*.yandex.ru https://*.yandex.com https://*.yandexdisk.com; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
-    if (!authorized(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Abonent", charset="UTF-8"' }); res.end('Требуется вход'); return; }
+    if (!access.enabled&&!authorized(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Abonent", charset="UTF-8"' }); res.end('Требуется вход'); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
+      if(await access.authRoute(req,res,url))return;
+      if(url.pathname.startsWith('/api/')&&url.pathname!=='/api/config')req.account=await access.require(req);
+      if(url.pathname.startsWith('/api/admin/')){await admin(req,res,url);return;}
       if (url.pathname === '/api/user-notifications') { await notifications(req,res,url); return; }
       if (url.pathname === '/api/map-geocode' && req.method === 'POST') {
         if (!String(req.headers['content-type'] || '').startsWith('application/json')) { sendJson(res,415,{ error:'Требуется JSON.' }); return; }
@@ -123,7 +140,10 @@ export function createServer(options = {}) {
         return;
       }
       if (!['GET','HEAD'].includes(req.method)) { sendJson(res,405,{ error:'Метод не поддерживается.' }); return; }
-      if (url.pathname === '/api/config') { sendJson(res, 200, { publicUrl: key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected, maps:{ geocoder:geocoder.hostname } }); return; }
+      if (url.pathname === '/api/config') {
+        const user=access.enabled&&req.headers.cookie?.includes('abonent_session=')?await access.identity(req):null;
+        sendJson(res, 200, { publicUrl:access.enabled&&!user?'':key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected, maps:{ geocoder:geocoder.hostname },auth:{enabled:access.enabled} }); return;
+      }
       if (url.pathname === '/api/diagnostics') {
         let database = { state: 'not_configured', issue: 'not_configured' }, catalog = { state: 'unavailable' };
         if (store) {
@@ -152,9 +172,10 @@ export function createServer(options = {}) {
         if (!prepared || !store.listFolders) { sendJson(res, 503, { error: 'Каталог базы ещё не готов.' }); return; }
         const path = url.searchParams.get('path') || '/';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096) { sendJson(res, 400, { error: 'Некорректный путь.' }); return; }
-        const folders = await store.listFolders(key);
+        if(resScope(path))await store.assertLoadAllowed?.(key,path);
+        const catalog=await store.listFolders(key),folders = catalog.filter(folder=>!folder.load_blocked);
         const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get('offset')) || 0));
-        const data = folders.length && preparedDirectory(folders,path,offset);
+        const data = catalog.length && (path==='/'||catalog.some(folder=>folder.enterprise_path===path))&&!folders.length?{type:'dir',path,_embedded:{items:[],total:0}}:folders.length&&preparedDirectory(folders,path,offset);
         if (!data) { sendJson(res, folders.length ? 404 : 503, { error: 'Каталог базы ещё не готов для этой папки.' }); return; }
         sendJson(res, 200, data); return;
       }
@@ -164,8 +185,10 @@ export function createServer(options = {}) {
         const role = url.searchParams.get('role') || '';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !['registry','consumption','incoming'].includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
         try {
+          const policy=await store.assertLoadAllowed?.(key,path);
           if (req.method === 'HEAD') {
             const snapshot = await (store.getMeta ? store.getMeta(key, path, role) : store.get(key, path, role));
+            await store.assertLoadAllowed?.(key,path,policy);
             if (!snapshot) { res.writeHead(404, { 'Cache-Control':'no-store' }); res.end(); return; }
             const revision = Buffer.from(snapshot.revision).toString('base64url');
             res.writeHead(req.headers['if-none-match'] === `"${revision}"` ? 304 : 200,
@@ -180,6 +203,7 @@ export function createServer(options = {}) {
           res.writeHead(200, { 'Content-Type': types['.json'], 'Content-Encoding': 'gzip', 'Cache-Control': 'no-store', 'ETag': `"${revision}"`, 'X-Prepared-Revision': revision, 'X-Prepared-Stale': result.stale ? '1' : '0' });
           if (req.method === 'HEAD') res.end(); else res.end(result.payload);
         } catch (error) {
+          if(error.status){sendJson(res,error.status,{code:error.code,error:error.message});return;}
           console.warn('Не удалось подготовить Excel:', error.message);
           if (/памяти|Пакет Excel превышает лимит/i.test(error.message)) {
             sendJson(res, 503, { code: 'memory_limit', error: 'Для подготовки этой книги не хватает памяти Amvera. Нужен тариф с большей памятью или меньший файл.' });
@@ -191,17 +215,20 @@ export function createServer(options = {}) {
         if (!configured) { sendJson(res, 503, { error: 'Общая папка не подключена. Обратитесь к администратору приложения.', code: configuredUrl ? 'source_invalid' : 'source_not_configured' }); return; }
         const path = url.searchParams.get('path') || '/';
         if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096) { sendJson(res, 400, { error: 'Некорректный путь.' }); return; }
+        const resourcePolicy=store?.assertLoadAllowed&&resScope(path)?await store.assertLoadAllowed(key,path):null;
         const target = new URL(api + (url.pathname === '/api/download' ? '/download' : ''));
         target.searchParams.set('public_key', key); target.searchParams.set('path', path);
         if (url.pathname === '/api/resources') {
           target.searchParams.set('limit', '100');
           target.searchParams.set('offset', String(Math.max(0, Math.min(100000, Number(url.searchParams.get('offset')) || 0))));
           target.searchParams.set('sort', 'name');
-          sendJson(res, 200, await metadata(target)); return;
+          const data=await metadata(target);if(resourcePolicy)await store.assertLoadAllowed(key,path,resourcePolicy);
+          sendJson(res, 200, data); return;
         }
         const { href } = await metadata(target);
         if (res.destroyed || req.aborted) return;
         const controller = new AbortController();
+        const policy=await store?.assertLoadAllowed?.(key,path);rawDownloads.set(controller,path);
         const disconnected = () => { if (!res.writableFinished) controller.abort(); };
         req.on('aborted', disconnected); res.on('close', disconnected);
         try {
@@ -217,6 +244,7 @@ export function createServer(options = {}) {
             break;
           }
           if (!response?.ok) { await response?.body?.cancel(); throw new Error('Не удалось скачать реестр с Яндекс Диска.'); }
+          await store?.assertLoadAllowed?.(key,path,policy);
           const lengthHeader = response.headers.get('content-length'), length = Number(lengthHeader);
           if (length > maxBytes) { await response.body?.cancel(); sendJson(res, 413, { error: 'Размер реестра превышает 40 МБ.' }); return; }
           let size = 0;
@@ -226,6 +254,7 @@ export function createServer(options = {}) {
           res.writeHead(200, headers);
           await pipeline(Readable.fromWeb(response.body), limiter, res, { signal: controller.signal }); return;
         } finally {
+          rawDownloads.delete(controller);
           controller.abort(); req.off('aborted', disconnected); res.off('close', disconnected);
         }
       }
@@ -241,18 +270,20 @@ export function createServer(options = {}) {
       if (error instanceof URIError || error.code === 'ERR_INVALID_ARG_VALUE') { sendJson(res, 400, { error: 'Некорректный адрес.' }); return; }
       if (error.code === 'ENOENT') { sendJson(res, 404, { error: 'Страница не найдена.' }); return; }
       if (!error.status) console.warn('Ошибка запроса:', error.message);
-      sendJson(res, error.status || 502, { error: error.status ? error.message : 'Сервис временно недоступен.' });
+      sendJson(res, error.status || 502, { error: error.status ? error.message : 'Сервис временно недоступен.',...(error.status&&error.code?{code:error.code}:{}) });
     }
   });
   server.preparedService = prepared;
   server.preparedStore = store;
+  server.accessControl=access;
   server.setDatabaseStatus = value => { databaseConnected = Boolean(value); };
   server.setSyncStatus = status => { syncStatus = { ...status }; };
   server.on('close', () => { Promise.resolve(store?.close?.()).catch(() => {}); });
   return server;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (Boolean(process.env.APP_USER) !== Boolean(process.env.APP_PASSWORD)) throw new Error('APP_USER и APP_PASSWORD нужно задавать вместе.');
+  superAdminConfig(process.env);
+  if (!process.env.SUPER_ADMIN_LOGIN&&Boolean(process.env.APP_USER) !== Boolean(process.env.APP_PASSWORD)) throw new Error('APP_USER и APP_PASSWORD нужно задавать вместе.');
   const port = Number(process.env.PORT) || 3000;
   const server = createServer();
   let connected = false;

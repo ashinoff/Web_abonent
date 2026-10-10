@@ -12,6 +12,26 @@ jobs:
     name: Tests (Node 22)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: abonent_test
+          POSTGRES_USER: abonent_test
+          POSTGRES_PASSWORD: integration-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U abonent_test -d abonent_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: 5432
+      TEST_DB_NAME: abonent_test
+      TEST_DB_USER: abonent_test
+      TEST_DB_PASSWORD: integration-test-only
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -28,4 +48,4 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: node --test --test-concurrency=1 tests/*.test.mjs

@@ -1,12 +1,15 @@
 import pg from 'pg';
 import { notificationSchema, createNotificationStore } from './notification-store.mjs';
+import { accountSchema } from './accounts.mjs';
+import { createAccountStore } from './account-store.mjs';
+import { adminSchema,createAdminStore,resScope,assertPolicy } from './admin-store.mjs';
 
 const names = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
-export function createPreparedStore(env = process.env) {
+export function createPreparedStore(env = process.env,{pool:providedPool}={}) {
   if (!names.some(name => env[name])) return null;
   const missing = names.filter(name => !env[name]);
   const port = Number(env.DB_PORT);
-  const pool = missing.length || !Number.isInteger(port) || port < 1 || port > 65535 ? null : new pg.Pool({
+  const pool = missing.length || !Number.isInteger(port) || port < 1 || port > 65535 ? null : providedPool||new pg.Pool({
     host: env.DB_HOST, port, database: env.DB_NAME, user: env.DB_USER, password: env.DB_PASSWORD,
     max: 2, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000, ssl: false,
   });
@@ -27,20 +30,26 @@ export function createPreparedStore(env = process.env) {
       enterprise_name text NOT NULL, res_name text NOT NULL,
       statuses jsonb NOT NULL, checked_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (source, res_path)
-    )`)).then(() => pool.query(notificationSchema)).catch(error => { initialized = null; throw error; });
+    )`)).then(() => pool.query(notificationSchema)).then(()=>pool.query(accountSchema)).then(()=>pool.query(adminSchema)).catch(error => { initialized = null; throw error; });
     await initialized;
   }
-  async function writeRaw(source, path, role, revision, json) {
+  const admin=createAdminStore(pool,ready);
+  async function writeRaw(source, path, role, revision, json,expected) {
     await ready();
     // Packages are read whole; SQL never searches their contents. JSON retains
     // the prepared text without building millions of JSONB nodes on a small DB.
     // The nullable column leaves all existing snapshots readable without a rewrite.
-    await pool.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data,payload_json) VALUES ($1,$2,$3,$4,'null'::jsonb,$5::json)
+    await admin.policyTransaction(async client=>{
+    assertPolicy(await admin.lockPolicy(client,source,resScope(path)),expected);
+    await client.query(`INSERT INTO abonent_snapshots (source,path,role,revision,data,payload_json) VALUES ($1,$2,$3,$4,'null'::jsonb,$5::json)
       ON CONFLICT (source,path,role) DO UPDATE SET revision=EXCLUDED.revision,data=EXCLUDED.data,payload_json=EXCLUDED.payload_json,updated_at=now()`,
     [source, path, role, revision, json]);
+    });
   }
   return {
     ...createNotificationStore(pool,ready),
+    ...createAccountStore(pool,ready),
+    ...admin,
     snapshotStorage: 'json',
     ready,
     async get(source, path, role) {
@@ -65,31 +74,44 @@ export function createPreparedStore(env = process.env) {
       const { rows } = await pool.query('SELECT revision, updated_at FROM abonent_snapshots WHERE source=$1 AND path=$2 AND role=$3', [source, path, role]);
       return rows[0] || null;
     },
-    async put(source, path, role, revision, data) {
-      await writeRaw(source, path, role, revision, JSON.stringify(data));
+    async put(source, path, role, revision, data,expected) {
+      await writeRaw(source, path, role, revision, JSON.stringify(data),expected);
     },
     putRaw: writeRaw,
-    async putFolder(source, folder, statuses) {
+    async putFolder(source, folder, statuses,expected) {
       await ready();
-      await pool.query(`INSERT INTO abonent_folder_status
+      return admin.policyTransaction(async client=>{
+      const policy=await admin.lockPolicy(client,source,folder.path);
+      if(expected&&(expected.generation!==policy.generation||expected.globalGeneration!==policy.globalGeneration))return false;
+      if(policy.blocked)statuses=Object.fromEntries(Object.entries(statuses).map(([role,status])=>[role,{...status,state:'blocked'}]));
+      await client.query(`INSERT INTO abonent_folder_status
         (source,res_path,enterprise_path,enterprise_name,res_name,statuses)
         VALUES ($1,$2,$3,$4,$5,$6)
         ON CONFLICT (source,res_path) DO UPDATE SET enterprise_path=EXCLUDED.enterprise_path,
         enterprise_name=EXCLUDED.enterprise_name,res_name=EXCLUDED.res_name,
         statuses=EXCLUDED.statuses,checked_at=now()`,
       [source, folder.path, folder.enterprisePath, folder.enterpriseName, folder.name, statuses]);
+      return true;
+      });
     },
-    async markFile(source, path, role, state, updatedAt) {
+    async markFile(source, path, role, state, updatedAt,expected) {
       await ready();
-      await pool.query(`UPDATE abonent_folder_status
+      await admin.policyTransaction(async client=>{
+      assertPolicy(await admin.lockPolicy(client,source,resScope(path)),expected);
+      await client.query(`UPDATE abonent_folder_status
         SET statuses=jsonb_set(statuses, ARRAY[$3], (statuses -> $3) || $4::jsonb), checked_at=now()
         WHERE source=$1 AND statuses -> $3 ->> 'path'=$2`,
       [source, path, role, JSON.stringify({ state, updatedAt })]);
+      });
     },
     async listFolders(source) {
       await ready();
-      const { rows } = await pool.query(`SELECT enterprise_path,enterprise_name,res_path,res_name,statuses,checked_at
-        FROM abonent_folder_status WHERE source=$1 ORDER BY enterprise_name,res_name`, [source]);
+      const { rows } = await pool.query(`SELECT f.enterprise_path,f.enterprise_name,f.res_path,f.res_name,f.statuses,f.checked_at,
+        COALESCE(p.blocked,false) AS local_blocked,COALESCE(g.blocked,false) AS global_blocked,
+        COALESCE(p.blocked,false) OR COALESCE(g.blocked,false) AS load_blocked
+        FROM abonent_folder_status f LEFT JOIN abonent_load_policy p ON p.source=f.source AND p.res_path=f.res_path
+        LEFT JOIN abonent_load_policy g ON g.source=f.source AND g.res_path='/'
+        WHERE f.source=$1 ORDER BY f.enterprise_name,f.res_name`, [source]);
       return rows;
     },
     async pruneFolders(source, paths) {

@@ -34,19 +34,20 @@ function flagDescription(flag) {
   if (flag.code === 'S8') first = first.replace(/ниже 30% медианы группы/, 'ниже настроенного порога группы');
   return first;
 }
-export function initAnalysisUI({ request, isReady, getIncoming, showConnection, onMapOpen }) {
+export function initAnalysisUI({ request, isReady, getIncoming, showConnection, onMapOpen, onAdminOpen }) {
   let settings; try { settings = normalizeSettings(JSON.parse(localStorage.getItem(storageKey) || '{}')); } catch { settings = normalizeSettings(); }
   let version=0, view=null, stack=[], tpChoices=[], parent=null;
   const save = () => { try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch {} };
   function settingsTab(name) {
     document.querySelectorAll('[data-settings-tab]').forEach(b => { const active=b.dataset.settingsTab===name; b.setAttribute('aria-selected',active); b.tabIndex=active?0:-1; });
-    $('#connection-settings').hidden=name!=='connection'; $('#load-map-settings').hidden=name!=='load-map'; $('#analysis-settings').hidden=name!=='analysis';
+    for(const tab of document.querySelectorAll('[data-settings-tab]'))document.getElementById(tab.getAttribute('aria-controls')).hidden=tab.dataset.settingsTab!==name;
     $('#settings-dialog .dialog-body').scrollTop=0;
     if (name === 'load-map') onMapOpen?.();
+    if (name === 'admin') onAdminOpen?.();
   }
   document.querySelectorAll('[data-settings-tab]').forEach(b => {
     b.addEventListener('click', () => settingsTab(b.dataset.settingsTab));
-    b.addEventListener('keydown', e => { if (['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) { e.preventDefault(); const tabs=['connection','load-map','analysis'], index=tabs.indexOf(b.dataset.settingsTab); const next=e.key==='Home'?tabs[0]:e.key==='End'?tabs.at(-1):tabs[Math.max(0,Math.min(tabs.length-1,index+(e.key==='ArrowRight'?1:-1)))]; settingsTab(next); document.querySelector(`[data-settings-tab="${next}"]`).focus(); } });
+    b.addEventListener('keydown', e => { if (['ArrowLeft','ArrowRight','Home','End'].includes(e.key)) { e.preventDefault(); const tabs=[...document.querySelectorAll('[data-settings-tab]')].filter(tab=>!tab.hidden).map(tab=>tab.dataset.settingsTab), index=tabs.indexOf(b.dataset.settingsTab); const next=e.key==='Home'?tabs[0]:e.key==='End'?tabs.at(-1):tabs[Math.max(0,Math.min(tabs.length-1,index+(e.key==='ArrowRight'?1:-1)))]; settingsTab(next); document.querySelector(`[data-settings-tab="${next}"]`).focus(); } });
   });
   function help(copy, label, kind = '') {
     const paragraphs = Array.isArray(copy) ? copy : [copy];

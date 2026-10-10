@@ -2,6 +2,7 @@ export const sourceRoles = [['registry', 'Реестр'], ['consumption', 'ПО'
 const name = path => path.split('/').filter(Boolean).at(-1) || path;
 
 export function folderSources(folder) {
+  if(folder.load_blocked)return [];
   return sourceRoles.flatMap(([role]) => {
     const item = folder.statuses?.[role];
     return item?.path ? [{ role, path: item.path, name: item.file || name(item.path), size: item.size, modified: item.modified }] : [];
