@@ -6,7 +6,7 @@ const dates=value=>value?new Date(value).toLocaleString('ru-RU'):'—';
 export function initAdminUI({account,onDatabaseChanged=()=>{},fetcher=(...args)=>fetch(...args)}){
   const $=selector=>document.querySelector(selector),panel=$('#admin-settings');
   let accounts=[],database=null,editing=null,loading=false,version=0;
-  const status=(selector,value)=>{$(selector).textContent=value;$(selector).hidden=!value;};
+  const status=(selector,value,pending=false)=>{$(selector).textContent=value;$(selector).hidden=!value;$(selector).classList.toggle('loading',pending);};
   function allowed(){return ['admin','superadmin'].includes(account()?.role);}
   async function api(path,method='GET',body){
     if(!navigator.onLine)throw new Error('Для администрирования нужна связь.');
@@ -36,8 +36,8 @@ export function initAdminUI({account,onDatabaseChanged=()=>{},fetcher=(...args)=
     }).join('')}</details>`).join('')||'<p class="hint">РЭС не найдены. Обновите карту папок.</p>';
     $('#admin-events').innerHTML=database.events.map(event=>`<article class="admin-event"><strong>${esc(event.message)}</strong><span>${esc(event.res_path==='/'?'Все РЭС':event.res_path||'')}${event.actor?' · '+esc(event.actor):''}</span><small>${esc(dates(event.created_at))} · ${esc(event.code)}</small></article>`).join('')||'<p class="hint">Ошибок и событий пока нет.</p>';
   }
-  async function refresh(){
-    if(loading||!allowed()||panel.hidden)return;loading=true;const run=++version;status('#admin-message','Проверяем базу и учётные записи…');
+  async function refresh({silent=false}={}){
+    if(loading||!allowed()||panel.hidden)return;loading=true;const run=++version;if(!silent)status('#admin-message','Проверяем базу и учётные записи…',true);
     try{const result=await Promise.all([api('accounts'),api('database')]);if(run!==version)return;accounts=result[0].accounts;database=result[1];renderAccounts();renderDatabase();status('#admin-message','');}
     catch(error){status('#admin-message',error.message);}finally{loading=false;}
   }
@@ -65,6 +65,6 @@ export function initAdminUI({account,onDatabaseChanged=()=>{},fetcher=(...args)=
   $('#admin-clear-database').addEventListener('click',event=>{if(window.confirm('Очистить ВСЕ подготовленные пакеты текущего источника и приостановить всю загрузку? Учётные записи и пользовательские отметки сохранятся.'))void action(event.currentTarget,async()=>{await api('clear-data','POST',{resPath:'/',confirm:true});onDatabaseChanged();});});
   $('#admin-clear-events').addEventListener('click',event=>{if(window.confirm('Очистить журнал ошибок и действий?'))void action(event.currentTarget,()=>api('clear-events','POST',{}));});
   $('#admin-catalog-refresh').addEventListener('click',event=>{void action(event.currentTarget,()=>api('refresh-catalog','POST',{}));});
-  const timer=setInterval(()=>{if(allowed()&&!panel.hidden&&$('#settings-dialog').open&&navigator.onLine&&document.visibilityState==='visible')void refresh();},10000);timer?.unref?.();
+  const timer=setInterval(()=>{if(allowed()&&!panel.hidden&&$('#settings-dialog').open&&navigator.onLine&&document.visibilityState==='visible')void refresh({silent:true});},10000);timer?.unref?.();
   window.addEventListener('pagehide',()=>clearInterval(timer));return{refresh,reset(){version++;accounts=[];database=null;editing=null;$('#admin-account-form').hidden=true;$('#admin-user-password').value='';}};
 }
