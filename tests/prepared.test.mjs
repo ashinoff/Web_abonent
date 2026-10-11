@@ -7,7 +7,8 @@ import { unpackRegistry, unpackMonthly } from '../public/prepared-data.js';
 import { buildIndex, search, listNotes, analysisRecords } from '../public/core.js';
 import { createAnalysisService } from '../public/analysis-service.js';
 import { indexMonthly } from '../public/monthly.js';
-import { createPreparedService, preparationLimits } from '../prepared-service.mjs';
+import { createPreparedService, preparationLimits, revisionOf } from '../prepared-service.mjs';
+import { JOURNAL_ANALYSIS_VERSION } from '../public/journals.js';
 import { createPreparedStore } from '../prepared-store.mjs';
 import { createServer } from '../server.mjs';
 
@@ -267,7 +268,7 @@ test('prepared API serves cached journals and validates blocks before any snapsh
   let blocked=false,reads=0,policyChecks=0;
   const preparedStore={
     assertLoadAllowed:async()=>{policyChecks++;if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
-    get:async(_,path,role)=>{reads++;return{revision:'journal-test',data:{format:1,role,rows:[]}};},
+    get:async(_,path,role)=>{reads++;return{revision:role==='instant'?`instant:v${JOURNAL_ANALYSIS_VERSION}:journal-test`:'journal-test',data:{format:1,role,rows:[]}};},
   };
   const server=createServer({env:{YANDEX_PUBLIC_URL:'https://disk.yandex.ru/d/CachedJournals'},preparedStore});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -284,4 +285,89 @@ test('prepared API serves cached journals and validates blocks before any snapsh
     assert.ok(policyChecks>4);
     assert.equal((await fetch(base+'/api/prepared?path=%2F%D0%AD%D0%A1%2F%D0%A0%D0%AD%D0%A1%2F%D0%B6%D1%83%D1%80%D0%BD%D0%B0%D0%BB.xlsx&role=unrecognised')).status,400);
   } finally {await new Promise(resolve=>server.close(resolve));}
+});
+
+test('journal 31 parser upgrade prepares unchanged Excel once before returning an old ETag',async t=>{
+  const source='https://disk.yandex.ru/d/ParserUpgrade',path='/ЭС/РЭС/31. значения.xlsx';
+  const workbook=excel([
+    ['Серийный','Время','Активная мощность по фазе 1 (КВт)','Напряжение на фазе 1 (В)','Ток в фазе 1 (А)','Коэффициент мощности по фазе 1 cos(f)'],
+    ['0001','01.08.2026 12:00:00',0.5,230,2.2,0.99],
+  ]);
+  const meta={type:'file',name:'31. значения.xlsx',size:workbook.length,modified:'2026-10-01',md5:'unchanged-source'};
+  let saved={revision:revisionOf(meta),updated_at:new Date(),data:{format:1,role:'instant',fields:['active1'],meters:[{serial:'0001',latest:{at:null,values:[0.5]},signals:[]}]}};
+  let downloads=0,writes=0,metadata=0,blocked=false;
+  const original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(String(url).startsWith('https://downloader.disk.yandex.ru/')){downloads++;return new Response(workbook,{headers:{'content-length':String(workbook.length)}});}
+    return original(url,options);
+  });
+  const store={getMeta:async()=>({revision:saved.revision,updated_at:saved.updated_at}),getRevision:async()=>saved.revision,get:async()=>saved,
+    assertLoadAllowed:async()=>{if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
+    put:async(_,file,role,revision,data)=>{assert.equal(file,path);assert.equal(role,'instant');writes++;saved={revision,data,updated_at:new Date()};}};
+  const service=createPreparedService({source,store,yandex:async url=>{
+    metadata++;
+    return Response.json(url.pathname.endsWith('/download')?{href:'https://downloader.disk.yandex.ru/upgrade'}:meta);
+  }});
+  const oldEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  const upgraded=await Promise.all(Array.from({length:5},()=>service.fromDatabase(path,'instant',oldEtag)));
+  assert.equal(downloads,1);assert.equal(writes,1);assert.equal(metadata,2);
+  assert.ok(upgraded.every(item=>!item.unchanged&&item.revision.startsWith(`instant:v${JOURNAL_ANALYSIS_VERSION}:`)));
+  const pack=JSON.parse(gunzipSync(upgraded[0].payload));assert.equal(pack.analysisVersion,JOURNAL_ANALYSIS_VERSION);
+  assert.equal(pack.role,'instant');assert.equal(pack.meters[0].serial,'0001');assert.ok(pack.fields.includes('neutralCurrent'));
+  const currentEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  const unchanged=await service.fromDatabase(path,'instant',currentEtag);
+  assert.equal(unchanged.unchanged,true);assert.equal(unchanged.revision,saved.revision);
+  assert.equal(downloads,1);assert.equal(writes,1);assert.equal(metadata,2);
+  blocked=true;
+  await assert.rejects(service.fromDatabase(path,'instant',oldEtag),error=>error.code==='res_blocked');
+  assert.equal(downloads,1);assert.equal(metadata,2);
+});
+
+test('journal parser upgrade failure retains the last good package and marks conditional responses stale',async t=>{
+  const path='/ЭС/РЭС/31. старый.xlsx',saved={revision:'legacy-instant',updated_at:new Date(),data:{format:1,role:'instant',fields:[],meters:[]}};
+  let attempts=0;
+  const store={getMeta:async()=>saved,getRevision:async()=>saved.revision,get:async()=>saved};
+  const service=createPreparedService({source:'https://disk.yandex.ru/d/UpgradeOffline',store,yandex:async()=>{attempts++;throw new Error('Нет сети.');}});
+  const result=await service.fromDatabase(path,'instant',`"${Buffer.from(saved.revision).toString('base64url')}"`);
+  assert.equal(result.unchanged,true);assert.equal(result.stale,true);assert.equal(result.revision,saved.revision);assert.equal(attempts,1);
+  const stale=await service.fromDatabase(path,'instant');assert.equal(stale.stale,true);
+  assert.deepEqual(JSON.parse(gunzipSync(stale.payload)),saved.data);
+  assert.equal(attempts,1,'failed parser upgrades pause remote metadata attempts for 60 seconds');
+});
+
+test('failed journal 31 upgrade backs off for 60 seconds without caching administrative denials',async t=>{
+  const path='/ЭС/РЭС/31. неверный.xlsx',workbook=excel([['Нет шапки журнала'],['Учебная строка']]);
+  const saved={revision:'legacy-instant',updated_at:new Date(),data:{format:1,role:'instant',fields:[],meters:[]}};
+  let downloads=0,metadata=0,blocked=false,generation='0',clock=Date.now();
+  t.mock.method(Date,'now',()=>clock);
+  const original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(String(url).startsWith('https://downloader.disk.yandex.ru/')){downloads++;return new Response(workbook,{headers:{'content-length':String(workbook.length)}});}
+    return original(url,options);
+  });
+  const store={getMeta:async()=>saved,getRevision:async()=>saved.revision,get:async()=>saved,
+    assertLoadAllowed:async(_,file,expected)=>{
+      if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});
+      if(expected&&expected.generation!==generation)throw Object.assign(new Error('Данные изменены.'),{status:409,code:'res_changed'});
+      return{generation,globalGeneration:'0'};
+    },put:async()=>assert.fail('Invalid journals must not replace the last good package')};
+  const service=createPreparedService({source:'https://disk.yandex.ru/d/UpgradeBackoff',store,yandex:async url=>{
+    metadata++;
+    return Response.json(url.pathname.endsWith('/download')?{href:'https://downloader.disk.yandex.ru/bad-upgrade'}:
+      {type:'file',name:'31. неверный.xlsx',size:workbook.length,modified:'2026-10-01'});
+  }});
+  const etag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  for(let i=0;i<2;i++){
+    const result=await service.fromDatabase(path,'instant',etag);assert.equal(result.unchanged,true);assert.equal(result.stale,true);
+  }
+  assert.equal(downloads,1);assert.equal(metadata,2,'second conditional request must not restart the failed parse');
+  blocked=true;
+  await assert.rejects(service.fromDatabase(path,'instant',etag),error=>error.code==='res_blocked');
+  assert.equal(downloads,1);assert.equal(metadata,2);
+  blocked=false;clock+=60001;
+  assert.equal((await service.fromDatabase(path,'instant',etag)).stale,true);
+  assert.equal(downloads,2);assert.equal(metadata,4,'the retry is allowed after 60 seconds');
+  generation='1';
+  assert.equal((await service.fromDatabase(path,'instant',etag)).stale,true);
+  assert.equal(downloads,3);assert.equal(metadata,6,'a new policy generation cannot inherit an earlier failure backoff');
 });

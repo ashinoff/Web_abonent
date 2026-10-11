@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSource, sourceRoleKeys } from './public/source.js';
+import { JOURNAL_ANALYSIS_VERSION } from './public/journals.js';
 import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
@@ -88,9 +89,14 @@ const validDownloadUrl = value => {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru','yandex.net','yandex.com','yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith('.' + h)); } catch { return false; }
 };
 export const revisionOf = meta => JSON.stringify([meta.md5 || meta.sha256 || '', meta.modified || '', meta.size]);
+// Journal 31 stores derived evidence instead of every source reading. A parser
+// upgrade therefore needs one new preparation even when the Excel is unchanged.
+// Other roles retain their existing revision and do not redownload on this update.
+const instantRevisionPrefix = () => `instant:v${JOURNAL_ANALYSIS_VERSION}:`;
+const preparedRevisionOf = (meta, role) => (role === 'instant' ? instantRevisionPrefix() : '') + revisionOf(meta);
 
 export function createPreparedService({ source, store, yandex }) {
-  const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map(),active=new Map();
+  const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map(),active=new Map(),upgradeFailures=new Map();
   const allowed=(path,expected)=>store.assertLoadAllowed?.(source,path,expected);
   async function report(path,role,error){
     const issue=preparationIssue(error);if(['res_blocked','res_changed'].includes(issue.code))return;
@@ -155,7 +161,7 @@ export function createPreparedService({ source, store, yandex }) {
         catch (error) { await allowed(path,policy);await report(path,role,error);if (previous) return { ...previous, stale: true }; throw error; }
         await allowed(path,policy);controller.signal.throwIfAborted();
         if (meta.type !== 'file' || !/\.xlsx?$/i.test(meta.name || '') || !Number.isFinite(meta.size) || meta.size > maxBytes) throw new Error('Файл Excel недоступен или превышает 40 МБ.');
-        const revision = revisionOf(meta);
+        const revision = preparedRevisionOf(meta, role);
         if (previous?.revision === revision) {
           await store.markFile?.(source, path, role, 'ready', previous.updated_at,policy);
           return previous;
@@ -197,16 +203,35 @@ export function createPreparedService({ source, store, yandex }) {
     if (!pendingResponses.has(key)) {
       const work = (async () => {
         let stale = false;
-        const meta = store.getMeta ? await readMeta(path, role) : null;
+        const meta = store.getMeta || role === 'instant' ? await readMeta(path, role) : null;
         const checkedKey = `${role}:${path}`;
-        if (meta && Date.now() - new Date(meta.updated_at).getTime() > 15 * 60 * 1000 &&
-            Date.now() - (metadataChecked.get(checkedKey) || 0) > 15 * 60 * 1000) {
+        const parserChanged = role === 'instant' && meta && !String(meta.revision).startsWith(instantRevisionPrefix());
+        const upgradeKey = role === 'instant' ? JSON.stringify([path, role, instantRevisionPrefix(), policy?.globalGeneration, policy?.generation]) : null;
+        if (upgradeKey && !parserChanged) upgradeFailures.delete(upgradeKey);
+        const failedAt = upgradeKey && upgradeFailures.get(upgradeKey);
+        const upgradePaused = parserChanged && failedAt != null && Date.now() - failedAt < 60000;
+        if (upgradePaused) stale = true;
+        // Check parser compatibility before conditional 304 responses and before
+        // the normal 15-minute source refresh interval. The existing queue and
+        // policy-generation guards still bound and authorize this preparation.
+        if (!upgradePaused && (parserChanged || meta && Date.now() - new Date(meta.updated_at).getTime() > 15 * 60 * 1000 &&
+            Date.now() - (metadataChecked.get(checkedKey) || 0) > 15 * 60 * 1000)) {
           metadataChecked.set(checkedKey, Date.now());
           stale = Boolean((await load(path, role)).stale);
+          await allowed(path,policy);
+          if (parserChanged) {
+            if (stale) {
+              // A failed migration of a huge workbook should not restart for
+              // every visitor. Generation-scoped keys cannot survive a clear or
+              // permission change, and denial errors never reach this cache.
+              while (upgradeFailures.size >= 256) upgradeFailures.delete(upgradeFailures.keys().next().value);
+              upgradeFailures.set(upgradeKey, Date.now());
+            } else upgradeFailures.delete(upgradeKey);
+          }
         }
         if (etag && store.getRevision) {
           const revision = await store.getRevision(source, path, role);
-          await allowed(path,policy);if (revision && etag === `"${Buffer.from(revision).toString('base64url')}"`) return { revision, unchanged: true };
+          await allowed(path,policy);if (revision && etag === `"${Buffer.from(revision).toString('base64url')}"`) return { revision, unchanged: true, stale };
         }
         if (store.getMeta && !meta) await load(path, role);
         // Database JSON and compression are large; bound them to one response

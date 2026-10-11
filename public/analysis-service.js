@@ -4,6 +4,7 @@ import { idKey } from './core.js';
 import { numeric, tpKey, strictSum, pointKey, accountPointKey, samePoint, selectPointRows } from './monthly.js';
 import { createJournalAnalysis } from './journal-analysis.js';
 import { flagObservation } from './analysis-observations.js';
+import { createJournalPeerContext } from './journal-peer-context.js';
 
 const MONTHLY_RECOMMENDATIONS = {
   S1: 'Сверить начало роста с вводом объекта, заменой ПУ и контрольными снятиями.',
@@ -26,6 +27,7 @@ export const monthlyRecommendation = flag => flag.recommendation || MONTHLY_RECO
 
 export function createAnalysisService(model, records = [], journals = {}) {
   const journalAnalysis = createJournalAnalysis(model, records, journals);
+  const annotateJournalContext = journalAnalysis ? createJournalPeerContext(model) : null;
   const byAccount = new Map();
   for (const record of records) {
     const key = idKey(record.fields.account); if (!key) continue;
@@ -87,7 +89,11 @@ export function createAnalysisService(model, records = [], journals = {}) {
       r.meter = raw.get(r.meter.id);
       r.total = r.meter.values.some(v => v != null) ? r.meter.values.reduce((s, v) => s + (v ?? 0), 0) : null;
       if (!r.meter.values.some(v => v != null && v >= 0)) { r.cls = 'unknown'; r.flags = []; r.lossKwh = null; r.score = null; }
-      if (journalAnalysis) journalAnalysis.supplement(r, meterRows.get(r.meter));
+      if (journalAnalysis) {
+        const rows = meterRows.get(r.meter);
+        journalAnalysis.supplement(r, rows);
+        for (const item of r.journal?.cases || []) annotateJournalContext(item, rows);
+      }
     }
     // A few large contours must not fill a mobile tab with cached histories.
     if (result.results.length <= 1000) {
@@ -138,7 +144,7 @@ export function createAnalysisService(model, records = [], journals = {}) {
         if (result.total == null || m.incomplete) incompleteTotal = true;
         if (result.total != null) consumption += result.total;
         lossKwh += result.lossKwh || 0;
-        const substantive = result.flags.filter(flag => flag.source == null || flag.pts > 0);
+        const substantive = result.flags.filter(flag => flag.source == null || flag.pts > 0 || flag.supportingEvidence === true);
         const reasons = substantive.map(flag => `${flag.title}: ${flagObservation(flag)}`);
         if (result.cls === 'dead') reasons.push('Все известные месячные объёмы не превышают 3 кВт·ч; проверить, действует ли договор и не было ли отключения.');
         if (result.cls === 'unknown') reasons.push('Нет неотрицательных числовых объёмов; для анализа недостаточно данных.');
@@ -162,10 +168,15 @@ export function createAnalysisService(model, records = [], journals = {}) {
         || String(a.account).localeCompare(String(b.account), 'ru', { numeric: true }));
       counts.selected = rows.length;
       const selected = new Set(rows.map(row => row.result.meter.id));
+      const caseDetails = journalAnalysis?.reportCases?.(selected, new Map(rows.map(row => [row.result.meter.id, row.result]))) || [];
+      for (const item of caseDetails) annotateJournalContext(item, model.accounts.get(item.account) || []);
+      counts.journalCases = caseDetails.length;
+      counts.combinedCases = caseDetails.filter(item => item.scenario === 'combined').length;
+      counts.caseMonths = caseDetails.reduce((total, item) => total + (item.months?.length || 1), 0);
       return { ...metadata, months: model.months, rows, counts, settings: normalizeSettings(settings), scope: 'ЛС, все ТУ — индивидуальные алгоритмы потребления',
         coverage: journalAnalysis?.coverage() || { instant: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, events: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, monthlyFirst: model.months.length ? `${model.months[0].y}-${String(model.months[0].m + 1).padStart(2, '0')}` : null, monthlyLast: model.months.length ? `${model.months.at(-1).y}-${String(model.months.at(-1).m + 1).padStart(2, '0')}` : null },
         unmatched: journalAnalysis?.unmatched || { instant: { meters: 0, rows: 0, reasons: [] }, events: { meters: 0, rows: 0, reasons: [] } },
-        events: journalAnalysis?.reportEvents() || [], metrics: journalAnalysis?.reportMetrics(selected) || [], totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
+        events: journalAnalysis?.reportEvents() || [], metrics: journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
     },
   };
 }

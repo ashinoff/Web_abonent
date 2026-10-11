@@ -30,7 +30,7 @@ self.onmessage = async ({ data }) => {
       journalControllers.set(id, controller);
       try {
       if (action === 'loadPreparedJournal') {
-        const { fetchPrepared } = await import('./prepared-cache.js?v=15');
+        const { fetchPrepared } = await import('./prepared-cache.js?v=16');
         ({ data: pack, ...cacheInfo } = await fetchPrepared({ ...payload, signal: controller.signal }));
       } else {
         ensureXLSX();
@@ -60,7 +60,7 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: { buffer, count: report.rows.length } }, [buffer]); return;
     }
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=15');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=16');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');

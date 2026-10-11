@@ -147,3 +147,104 @@ test('journal headers and size limits fail explicitly, rather than silently trun
   assert.throws(()=>readJournalWorkbook(new Uint8Array([0x50,0x4b]),fake,'events'),/500 000/);
   assert.throws(()=>readJournalWorkbook(new Uint8Array([1,2,3]),XLSX,'events'),/Excel/);
 });
+
+test('new weak missing-current observation requires three live phase voltages and real numeric current',()=>{
+  const base={voltage1:230,voltage2:230,voltage3:230,current1:0.02,current2:1,current3:1};
+  const find=metrics=>readJournalWorkbook(instant([row('000123','31.08.2026',metrics)]),XLSX,'instant').meters[0].signals.find(s=>s.code==='J31_MISSING_CURRENT');
+  const hit=find(base);assert.ok(hit);assert.equal(hit.informational,true);assert.equal(hit.conditional,true);
+  for(const override of [{current1:0.021},{current1:null},{voltage1:null},{voltage2:0},{current2:0,current3:0},{current2:0.999,current3:null}])assert.equal(find({...base,...override}),undefined);
+  assert.equal(find({voltage1:230,voltage2:0,voltage3:0,current1:2,current2:0,current3:0}),undefined);
+});
+
+test('low PF and phase unbalance remain strictly informational without conditional amplification',()=>{
+  const data={voltage1:230,voltage2:230,voltage3:230,current1:2,current2:1,current3:0.03,powerFactor1:0.1};
+  const flags=readJournalWorkbook(instant([row('000123','31.08.2026',data)]),XLSX,'instant').meters[0].signals;
+  for(const code of ['J31_PF','J31_UNBALANCE']){const f=flags.find(s=>s.code===code);assert.ok(f);assert.equal(f.informational,true);assert.equal(f.conditional,undefined);}
+});
+
+test('P/Q/S check only flags substantial impossible excess, not harmonic apparent-power surplus',()=>{
+  const codes=metrics=>readJournalWorkbook(instant([row('000123','31.08.2026',metrics)]),XLSX,'instant').meters[0].signals.map(s=>s.code);
+  assert.ok(codes({active1:1,apparent1:0.4}).includes('J31_VECTOR'));
+  assert.ok(codes({active1:0.5,reactive1:1,apparent1:0.5}).includes('J31_VECTOR'));
+  for(const metrics of [{active1:0.6,reactive1:0.8,apparent1:1},{active1:0.3,reactive1:0.4,apparent1:1},{active1:0.8,apparent1:0.7},{active1:0.1,apparent1:0.01},{active1:null,reactive1:1,apparent1:0.4},{active1:1,apparent1:null}])assert.ok(!codes(metrics).includes('J31_VECTOR'));
+});
+
+test('conditional angular diagnostics respect PF sign, harmonics and actual angle units',()=>{
+  const codes=metrics=>readJournalWorkbook(instant([row('000123','31.08.2026',metrics)]),XLSX,'instant').meters[0].signals;
+  const bad=codes({active1:0.8,reactive1:0.6,apparent1:1,powerFactor1:0.8,angle1:85}).find(s=>s.code==='J31_VECTOR_ANGLE');
+  assert.ok(bad);assert.equal(bad.conditional,true);assert.equal(bad.informational,true);
+  const angle=Math.acos(0.8)*180/Math.PI;
+  for(const metrics of [{active1:0.8,reactive1:-0.6,apparent1:1,powerFactor1:-0.8,angle1:-angle},{active1:0.3,reactive1:0.4,apparent1:1,powerFactor1:1,angle1:0},{active1:0.5,apparent1:1,powerFactor1:null,angle1:80},{active1:0.1,apparent1:0.1,powerFactor1:1,angle1:80},{active1:0.8,apparent1:1,powerFactor1:1,angle1:null},{active1:0.8,apparent1:1,powerFactor1:1,angle1:1e9}])assert.ok(!codes(metrics).some(s=>s.code==='J31_VECTOR_ANGLE'));
+  const genericHeaders=[...instantHeaders];genericHeaders[34]='Коэффициент мощности по фазе 1';
+  const pack=readJournalWorkbook(excel({'Лист1':[genericHeaders,row('000123','31.08.2026',{active1:0.8,apparent1:1,powerFactor1:1,angle1:80})]}),XLSX,'instant');
+  assert.ok(!pack.meters[0].signals.some(s=>s.code==='J31_VECTOR_ANGLE'));
+});
+
+test('S versus U*I is conditional and only evaluated with known units in explicitly unscaled report',()=>{
+  const metrics={voltage1:230,current1:10,apparent1:0.5};
+  const pack=readJournalWorkbook(instant([row('000123','31.08.2026',metrics)]),XLSX,'instant');
+  const flag=pack.meters[0].signals.find(s=>s.code==='J31_VECTOR_UI');assert.ok(flag);assert.equal(flag.conditional,true);assert.equal(flag.informational,true);
+  const generic=readJournalWorkbook(excel({'Лист1':[instantHeaders,row('000123','31.08.2026',metrics)]}),XLSX,'instant');
+  assert.ok(!generic.meters[0].signals.some(s=>s.code==='J31_VECTOR_UI'));
+  const missingUnits=[...instantHeaders];missingUnits[26]='Напряжение на фазе 1';
+  const incomplete=readJournalWorkbook(excel({'Лист1':[['без учета коэффициентов трансформации'],missingUnits,row('000123','31.08.2026',metrics)]}),XLSX,'instant');
+  assert.ok(!incomplete.meters[0].signals.some(s=>s.code==='J31_VECTOR_UI'));assert.ok(incomplete.warnings.some(w=>w.includes('единицы не указаны')));
+});
+
+test('canonical unit conversion covers W/var/VA, kV, mA, percentages and radians before diagnostics',()=>{
+  const headers=[...instantHeaders];headers[15]='Активная мощность по фазе 1 (Вт)';headers[19]='Реактивная мощность по фазе 1 (вар)';headers[23]='Полная мощность по фазе 1 (ВА)';headers[26]='Напряжение на фазе 1 (кВ)';headers[29]='Ток в фазе 1 (мА)';headers[34]='Коэффициент мощности по фазе 1 cos(f), %';headers[44]='Угол между векторами U I, фазы A, рад';
+  const data={active1:800,reactive1:600,apparent1:1000,voltage1:0.23,current1:1000/0.23,powerFactor1:80,angle1:Math.acos(0.8)};
+  const pack=readJournalWorkbook(excel({'Лист1':[['без учета коэффициентов трансформации'],headers,row('000123','31.08.2026',data)]}),XLSX,'instant');
+  const v=Object.fromEntries(pack.fields.map((key,i)=>[key,pack.meters[0].latest.values[i]]));
+  assert.equal(v.active1,0.8);assert.equal(v.reactive1,0.6);assert.equal(v.apparent1,1);assert.equal(v.voltage1,230);assert.ok(Math.abs(v.current1-1000/230)<1e-9);assert.equal(v.powerFactor1,0.8);assert.ok(Math.abs(v.angle1-Math.acos(0.8)*180/Math.PI)<1e-9);
+  assert.ok(!pack.meters[0].signals.some(s=>s.code.startsWith('J31_VECTOR')));assert.ok(pack.warnings.some(w=>w.includes('пересчитаны')));
+});
+
+test('contradictory physical unit and overflowing conversions never become anomaly evidence',()=>{
+  const headers=[...instantHeaders];headers[15]='Активная мощность по фазе 1 (кВА)';headers[19]='Реактивная мощность по фазе 1 (Мвар)';
+  const pack=readJournalWorkbook(excel({'Лист1':[headers,row('000123','31.08.2026',{active1:900,reactive1:1e308,apparent1:1})]}),XLSX,'instant');
+  const latest=pack.meters[0].latest.values;
+  assert.equal(latest[INSTANT_FIELDS.indexOf('active1')],null);assert.equal(latest[INSTANT_FIELDS.indexOf('reactive1')],null);assert.ok(!pack.meters[0].signals.some(s=>s.code==='J31_VECTOR'));
+  assert.ok(pack.warnings.some(w=>w.includes('несоответствующая единица')));
+});
+
+test('high neutral under triplen harmonics or one-phase load does not imply a jumper',()=>{
+  const codes=metrics=>readJournalWorkbook(instant([row('000123','31.08.2026',metrics)]),XLSX,'instant').meters[0].signals;
+  assert.ok(!codes({current1:40,current2:40,current3:40,neutralCurrent:100}).some(s=>s.code==='J31_NEUTRAL'));
+  assert.ok(!codes({current1:10,current2:0,current3:0,neutralCurrent:10}).some(s=>s.code==='J31_NEUTRAL'));
+  assert.ok(!codes({current1:10,current2:null,current3:0,neutralCurrent:20}).some(s=>s.code==='J31_NEUTRAL'));
+  const excess=codes({current1:2,current2:2,current3:2,neutralCurrent:10}).find(s=>s.code==='J31_NEUTRAL');
+  assert.ok(excess);assert.match(excess.recommendation,/не доказывает перемычку/);
+});
+
+test('compact monthly observations retain actual first/last details across out-of-order data',()=>{
+  const make=(day,p)=>row('000123',`${String(day).padStart(2,'0')}.08.2026 10:00`,{active1:p,current1:5});
+  const rows=[make(20,-1),make(10,-2),make(25,-3),make(1,-4),make(15,-100)];
+  const pack=readJournalWorkbook(instant(rows),XLSX,'instant'),flag=pack.meters[0].signals.find(s=>s.code==='J31_REVERSE'),m=flag.months[0];
+  assert.equal(m.count,5);assert.equal(m.observations.length,2);assert.equal(m.observations[0].at,'2026-08-01T10:00:00');assert.equal(m.observations[1].at,'2026-08-25T10:00:00');
+  assert.match(m.observations[0].detail,/−?[-]4/);assert.match(m.observations[1].detail,/−?[-]3/);assert.equal(m.detail,m.observations[0].detail);assert.equal(flag.detail,m.observations[0].detail);
+  const one=readJournalWorkbook(instant([make(10,-2)]),XLSX,'instant').meters[0].signals[0].months[0];assert.equal(one.observations.length,1);
+});
+
+test('many observations keep bounded evidence and first detail instead of every abnormal sample',()=>{
+  const rows=Array.from({length:150},(_,i)=>row('000123',`01.08.2026 10:${String(Math.floor(i/60)).padStart(2,'0')}:${String(i%60).padStart(2,'0')}`,{active1:-1-i/100,current1:5}));
+  const pack=readJournalWorkbook(instant(rows),XLSX,'instant'),m=pack.meters[0].signals[0].months[0];
+  assert.equal(m.count,150);assert.equal(m.observations.length,2);assert.equal(m.observations[0].at,'2026-08-01T10:00:00');assert.equal(m.observations[1].at,'2026-08-01T10:02:29');
+  assert.ok(JSON.stringify(pack).length<5000);
+});
+
+test('reverse profile uses report period, never instant timestamp/month, and same direction family',()=>{
+  const metrics={reverseMin:0,reverseAvg:0.1,reverseMax:0.2,active1:-1,current1:5};
+  const pack=readJournalWorkbook(instant([row('000123','31.08.2026 15:15',metrics),row('000123','31.08.2026 15:16',metrics)]),XLSX,'instant');
+  assert.equal(pack.analysisVersion,2);
+  const profile=pack.meters[0].signals.find(s=>s.code==='J31_REVERSE_PROFILE'),phase=pack.meters[0].signals.find(s=>s.code==='J31_REVERSE');
+  assert.equal(profile.timestampBasis,'report_period');assert.deepEqual(profile.reportPeriod,{from:'2026-08-01',to:'2026-09-01'});assert.equal(profile.first,null);assert.equal(profile.last,null);assert.deepEqual(profile.months,[]);assert.equal(profile.count,1);assert.equal(profile.family,phase.family);assert.equal(profile.family,'direction');assert.match(profile.detail,/интервальные параметры/);assert.match(profile.recommendation,/генераци/);
+});
+
+test('all twelve profile parameters check ordering/signs as data quality, with incomplete and rounded values allowed',()=>{
+  const bad={forwardMin:1,forwardAvg:0.2,forwardMax:2,reverseMin:-1,reverseAvg:0,reverseMax:0,reactiveImportMin:0,reactiveImportAvg:3,reactiveImportMax:1,reactiveExportMin:2,reactiveExportMax:1};
+  const pack=readJournalWorkbook(instant([row('000123','31.08.2026',bad)]),XLSX,'instant'),flag=pack.meters[0].signals.find(s=>s.code==='J31_PROFILE_QUALITY');
+  assert.ok(flag);assert.equal(flag.informational,true);assert.equal(flag.timestampBasis,'report_period');assert.equal(flag.first,null);assert.deepEqual(flag.months,[]);for(const name of ['A+','A−','R+','R−'])assert.ok(flag.detail.includes(name));
+  const safe={forwardMin:0.205,forwardAvg:0.2,forwardMax:null,reverseAvg:null,reverseMax:0.199,reactiveImportMin:0,reactiveImportMax:1};
+  const normal=readJournalWorkbook(instant([row('000123','31.08.2026',safe)]),XLSX,'instant');assert.ok(!normal.meters[0].signals.some(s=>s.code==='J31_PROFILE_QUALITY'||s.code==='J31_REVERSE_PROFILE'));
+});
