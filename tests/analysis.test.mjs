@@ -42,6 +42,37 @@ test('same-TU input rows stay additive even with equal values and equal tariff z
   assert.equal(p.rows.length,4);assert.deepEqual(strictSum(p.accounts.get('001'),27),Array(27).fill(50));
   assert.equal(p.aliases.get('009').has('001'),true);assert.deepEqual(p.warnings,[]);
 });
+for(const bookType of ['biff8','xlsx']) test(`${bookType}: blank contract keeps STEK LS volumes and never treats a TU number as an LS`,()=>{
+  const source=[
+    ['ЛС/Номер договора','№ ТУ','Наименование договора','ФИО/ Наименование точки учёта','Вид','Лицевой счет СТЕК','Номер точки учета СТЕК','ТП','Январь 2026','Февраль 2026','Март 2026'],
+    ['','','','Учебный потребитель','Быт',123,'','471',97,-573,0],
+    ['','','','Учебный потребитель','Быт',123,'','471',10,0,''],
+    ['C-1','11','Учебный договор','Другая точка','Прочие','','000000000123','472',900,800,700],
+    ['','','Итого','','','','','','1007',227,700],
+  ];
+  const book=XLSX.utils.book_new(),ws=XLSX.utils.aoa_to_sheet(source);ws.F2.z=ws.F3.z='000000000000';
+  XLSX.utils.book_append_sheet(book,ws,'ПО');
+  const parsed=readMonthlyWorkbook(XLSX.write(book,{type:'buffer',bookType}),XLSX);
+  assert.equal(parsed.rows.length,3);assert.equal(parsed.rows[0].account,'000000000123');assert.equal(parsed.rows[0].accountFallback,true);
+  assert.ok(parsed.warnings.some(w=>/без номера договора.*2/.test(w)));
+  const s=createAnalysisService(indexMonthly(parsed));
+  const selected=s.consumer('000000000123',{},null,{pointName:'Учебный потребитель'});
+  assert.deepEqual(selected.result.meter.values,[107,-573,null]);assert.equal(selected.result.meter.rowCount,2);
+  assert.deepEqual(s.consumer('C-1',{}).result.meter.values,[900,800,700]);
+  assert.equal(s.consumer('000000000123',{}).result.meter.account,'000000000123');
+});
+test('STEK-only inputs join one explicit contract across sheets; conflicting or exact contract numbers stay distinct',()=>{
+  const header=['ЛС/Номер договора','Лицевой счет СТЕК','ТУ','Январь 2026','Февраль 2026'];
+  const first=parseMonthlyMatrix([header,['C-1','009','Объект',10,20]]);
+  const second=parseMonthlyMatrix([header,['','009','Объект',10,20],['','009','Объект',10,20]]);
+  const model=indexMonthly({...first,rows:[...first.rows,...second.rows]});
+  const s=createAnalysisService(model);assert.deepEqual(s.consumer('009',{}).result.meter.values,[30,60]);assert.equal(s.consumer('C-1',{}).result.meter.rowCount,3);assert.equal(model.accounts.size,1);
+  const ambiguous=parseMonthlyMatrix([header,['C-1','009','Объект',10,20],['C-2','009','Объект',30,40],['','009','Объект',50,60]]);
+  assert.throws(()=>createAnalysisService(indexMonthly(ambiguous)).consumer('009',{}),/нескольким договорам/);
+  const exact=parseMonthlyMatrix([header,['009','009','Объект',10,20],['C-2','009','Объект',30,40]]);
+  assert.equal(indexMonthly(exact).accounts.size,2);
+  assert.throws(()=>createAnalysisService(indexMonthly(exact)).consumer('009',{}),/нескольким договорам/);
+});
 test('LS aggregates points exactly once; TP isolates its portion and never multiplies by TT',()=>{
   const a=row('001','P1','ТП-1',Array(27).fill(100),'009'),b=row('001','P2','ТП-2',Array(27).fill(50)),c=row('002','P3','ТП-1',Array(27).fill(20));
   const records=[{fields:{account:'001',point:'P1',meter:'M1',tp:'ТП-1',power:'10',transformerRatio:'60'}},{fields:{account:'001',point:'P2',meter:'M2',tp:'ТП-2',power:'20'}},{fields:{account:'001',point:'P1',meter:'M1',tp:'ТП-1',power:'10'}}];

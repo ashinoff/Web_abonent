@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSource, sourceRoleKeys } from './public/source.js';
 import { JOURNAL_ANALYSIS_VERSION, EVENTS_PACKAGE_VERSION } from './public/journals.js';
+import { MONTHLY_PARSER_VERSION } from './public/monthly.js';
 import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
@@ -104,11 +105,12 @@ const validDownloadUrl = value => {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru','yandex.net','yandex.com','yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith('.' + h)); } catch { return false; }
 };
 export const revisionOf = meta => JSON.stringify([meta.md5 || meta.sha256 || '', meta.modified || '', meta.size]);
-// Journal packages store derived evidence. Upgrade each parser independently,
+// Prepared packages store derived data. Upgrade each parser independently,
 // even when its Excel is unchanged, without invalidating other source roles.
-const journalRevisionPrefix = role => role === 'instant' ? `instant:v${JOURNAL_ANALYSIS_VERSION}:`
-  : role === 'events' ? `events:v${EVENTS_PACKAGE_VERSION}:` : null;
-const preparedRevisionOf = (meta, role) => (journalRevisionPrefix(role) || '') + revisionOf(meta);
+const parserRevisionPrefix = role => role === 'instant' ? `instant:v${JOURNAL_ANALYSIS_VERSION}:`
+  : role === 'events' ? `events:v${EVENTS_PACKAGE_VERSION}:`
+  : role === 'consumption' ? `consumption:v${MONTHLY_PARSER_VERSION}:` : null;
+const preparedRevisionOf = (meta, role) => (parserRevisionPrefix(role) || '') + revisionOf(meta);
 
 export function createPreparedService({ source, store, yandex }) {
   const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map(),active=new Map(),upgradeFailures=new Map();
@@ -218,7 +220,7 @@ export function createPreparedService({ source, store, yandex }) {
     if (!pendingResponses.has(key)) {
       const work = (async () => {
         let stale = false;
-        const parserPrefix = journalRevisionPrefix(role);
+        const parserPrefix = parserRevisionPrefix(role);
         const meta = store.getMeta || parserPrefix ? await readMeta(path, role) : null;
         const checkedKey = `${role}:${path}`;
         const parserChanged = parserPrefix && meta && !String(meta.revision).startsWith(parserPrefix);

@@ -1,5 +1,6 @@
 import { clean, norm, idKey, columnName } from './core.js';
 
+export const MONTHLY_PARSER_VERSION = 2;
 const MONTHS = ['январ', 'феврал', 'март', 'апрел', 'ма[йя]', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
 export const tpKey = value => norm(value).replace(/[‐‑–—]/g, '-').replace(/\s+/g, '');
 // A STEK identifier alone does not distinguish all TUs in these exports.
@@ -74,7 +75,7 @@ function parseMonthlyRows(rowCount, rowAt, { sheet = 'Лист1', worksheet = nu
   if (period && period[1].y * 12 + period[1].m !== start + cols.length - 1) throw new Error('Количество месячных столбцов не совпадает с периодом в заголовке.');
   const find = rx => header.findIndex(v => rx.test(norm(v)));
   const c = { account: header.findIndex(accountHeader), alias: find(/^лицевой счет стек$/), point: find(/^(номер точки учета стек|номер ту\s*стек)$/), pointNumber: find(/^(№\s*ту|номер ту)$/), name: find(/^наименование договора$/), pointName: find(/^(фио\s*\/\s*наименование точки учета|ту|наименование ту|наименование точки учета)$/), tp: find(/^тп$/), zone: find(/^тарифная зона$/), off: find(/^откл$/) };
-  const rows = [], warnings = []; let invalid = 0, totalsMismatch = 0;
+  const rows = [], warnings = []; let invalid = 0, totalsMismatch = 0, fallbackAccounts = 0;
   const totalCol = find(/^всего.*по/);
   function identifier(row, r, col) {
     if (col < 0) return '';
@@ -89,7 +90,8 @@ function parseMonthlyRows(rowCount, rowAt, { sheet = 'Лист1', worksheet = nu
   }
   for (let r = h + 1; r < rowCount; r++) {
     const row = rowAt(r); if (!row.some(v => clean(v))) continue;
-    const account = identifier(row, r, c.account);
+    const contract = identifier(row, r, c.account), alias = identifier(row, r, c.alias);
+    const account = contract || alias;
     if (!account || /^(итого|всего|лс\b|лицевой счет)/i.test(account)) continue;
     if (!/\d/.test(account)) { invalid++; continue; }
     const values = cols.map(({ c }) => {
@@ -99,12 +101,14 @@ function parseMonthlyRows(rowCount, rowAt, { sheet = 'Лист1', worksheet = nu
     });
     const total = numeric(row[totalCol]);
     if (total != null && values.every(v => v != null) && Math.abs(total - values.reduce((s, v) => s + v, 0)) > 0.05) totalsMismatch++;
-    rows.push({ account, accountKey: idKey(account), alias: identifier(row, r, c.alias), point: identifier(row, r, c.point), pointNumber: identifier(row, r, c.pointNumber), name: clean(row[c.name]), pointName: clean(row[c.pointName]), tp: clean(row[c.tp]), zone: clean(row[c.zone]), off: clean(row[c.off]), values, source: `${sheet}:${r + 1}` });
+    if (!contract) fallbackAccounts++;
+    rows.push({ account, accountKey: idKey(account), alias, accountFallback: !contract, point: identifier(row, r, c.point), pointNumber: identifier(row, r, c.pointNumber), name: clean(row[c.name]), pointName: clean(row[c.pointName]), tp: clean(row[c.tp]), zone: clean(row[c.zone]), off: clean(row[c.off]), values, source: `${sheet}:${r + 1}` });
   }
   if (!rows.length) throw new Error('Нет строк с лицевыми счетами.');
   if (!rows.some(r => r.values.some(v => v != null))) throw new Error('Нет числовых месячных объёмов потребления.');
   if (invalid) warnings.push(`Нераспознанных значений или строк: ${invalid}. Пустые/нечисловые объёмы не считаются нулями.`);
   if (totalsMismatch) warnings.push(`У ${totalsMismatch} строк итог не совпадает с суммой месяцев; использованы месячные столбцы.`);
+  if (fallbackAccounts) warnings.push(`Строки без номера договора сохранены по лицевому счёту СТЕК: ${fallbackAccounts}.`);
   return { months, rows, warnings };
 }
 export function readMonthlyWorkbook(buffer, XLSX) {
@@ -142,14 +146,31 @@ export function readMonthlyWorkbook(buffer, XLSX) {
 // month by month when analysing a TU, account or the selected TP contour.
 export function indexMonthly(parsed) {
   const accounts = new Map(), aliases = new Map();
-  for (const row of parsed.rows) {
+  // A missing contract does not erase a household's monthly volumes. If this
+  // STEK LS has exactly one explicit contract elsewhere, retain all its input
+  // rows under that contract. Never use a TU's STEK number as an account alias.
+  const explicit = new Map(), contractNames = new Map();
+  for (const row of parsed.rows) if (!row.accountFallback) {
+    contractNames.set(row.accountKey, row.account);
+    const alias = idKey(row.alias);
+    if (!alias) continue;
+    if (!explicit.has(alias)) explicit.set(alias, new Set());
+    explicit.get(alias).add(row.accountKey);
+  }
+  const rows = parsed.rows.map(row => {
+    const choices = row.accountFallback && explicit.get(idKey(row.alias));
+    if (choices?.size !== 1) return row;
+    const key = [...choices][0];
+    return { ...row, accountKey: key, account: contractNames.get(key) };
+  });
+  for (const row of rows) {
     if (!accounts.has(row.accountKey)) accounts.set(row.accountKey, []);
     accounts.get(row.accountKey).push(row);
     for (const alias of [row.accountKey, idKey(row.alias)].filter(Boolean)) {
       if (!aliases.has(alias)) aliases.set(alias, new Set()); aliases.get(alias).add(row.accountKey);
     }
   }
-  return { ...parsed, accounts, aliases };
+  return { ...parsed, rows, accounts, aliases };
 }
 export function strictSum(rows, n) {
   return Array.from({ length: n }, (_, i) => rows.length && rows.every(r => r.values[i] != null) ? rows.reduce((s, r) => s + r.values[i], 0) : null);

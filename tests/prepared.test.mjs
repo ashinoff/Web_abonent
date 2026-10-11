@@ -6,7 +6,7 @@ import { prepareWorkbook } from '../prepared-workbook.mjs';
 import { unpackRegistry, unpackMonthly } from '../public/prepared-data.js';
 import { buildIndex, search, listNotes, analysisRecords } from '../public/core.js';
 import { createAnalysisService } from '../public/analysis-service.js';
-import { indexMonthly } from '../public/monthly.js';
+import { indexMonthly, MONTHLY_PARSER_VERSION } from '../public/monthly.js';
 import { createPreparedService, preparationLimits, revisionOf } from '../prepared-service.mjs';
 import { JOURNAL_ANALYSIS_VERSION, EVENTS_PACKAGE_VERSION } from '../public/journals.js';
 import { createPreparedStore } from '../prepared-store.mjs';
@@ -71,6 +71,42 @@ test('five clients prepare one file once, version check reuses DB and failed upd
   t.mock.method(globalThis, 'fetch', async address => { if (String(address).startsWith('https://downloader.disk.yandex.ru/')) throw new Error('offline'); return savedFetch(address); });
   const stale = await service.load('/РЭС/ПО.xlsx', 'consumption');
   assert.equal(stale.stale,true); assert.equal(stale.revision,second.revision);
+});
+
+test('monthly parser upgrade restores STEK-only rows once before old ETag and preserves offline fallback',async t=>{
+  const source='https://disk.yandex.ru/d/MonthlyAccountUpgrade',path='/ЭС/РЭС/ПО.xlsx';
+  const workbook=excel([
+    ['ЛС/Номер договора','Лицевой счет СТЕК','ТУ','ТП','Январь 2026','Февраль 2026'],
+    ['C-1','','Другая точка','472',100,200],
+    ['','000000000123','Учебный потребитель','471',97,-573],
+    ['','000000000123','Учебный потребитель','471',10,0],
+  ]);
+  const meta={type:'file',name:'ПО.xlsx',size:workbook.length,modified:'2026-10-01',md5:'same-monthly-source'};
+  const legacy={format:1,role:'consumption',months:[{y:2026,m:0},{y:2026,m:1}],warnings:[],rows:[['C-1','','','','','','472','',null,[100,200],'Лист1:2']]};
+  let saved={revision:revisionOf(meta),updated_at:new Date(),data:legacy},metadata=0,downloads=0,writes=0,blocked=false,unavailable=true,clock=Date.now();
+  t.mock.method(Date,'now',()=>clock);
+  const oldEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`,original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(String(url).startsWith('https://downloader.disk.yandex.ru/')){downloads++;return new Response(workbook,{headers:{'content-length':String(workbook.length)}});}
+    return original(url,options);
+  });
+  const store={getMeta:async()=>({revision:saved.revision,updated_at:saved.updated_at}),getRevision:async()=>saved.revision,get:async()=>saved,
+    assertLoadAllowed:async()=>{if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
+    put:async(_,file,role,revision,data)=>{assert.equal(file,path);assert.equal(role,'consumption');writes++;saved={revision,data,updated_at:new Date()};}};
+  const service=createPreparedService({source,store,yandex:async url=>{metadata++;if(unavailable)throw new Error('offline');return Response.json(url.pathname.endsWith('/download')?{href:'https://downloader.disk.yandex.ru/monthly-upgrade'}:meta);}});
+  const stale=await service.fromDatabase(path,'consumption',oldEtag);assert.equal(stale.unchanged,true);assert.equal(stale.stale,true);
+  await service.fromDatabase(path,'consumption',oldEtag);assert.equal(metadata,1,'failed migration backs off');assert.equal(saved.data,legacy);
+  blocked=true;await assert.rejects(service.fromDatabase(path,'consumption'),e=>e.code==='res_blocked');assert.equal(metadata,1);
+  blocked=false;unavailable=false;clock+=60001;
+  const results=await Promise.all(Array.from({length:5},(_,i)=>service.fromDatabase(path,'consumption',i%2?undefined:oldEtag)));
+  assert.equal(downloads,1);assert.equal(writes,1);assert.equal(metadata,3);
+  assert.ok(results.every(r=>!r.unchanged&&!r.stale&&r.revision===`consumption:v${MONTHLY_PARSER_VERSION}:`+revisionOf(meta)));
+  const pack=JSON.parse(gunzipSync(results[0].payload));assert.equal(pack.parserVersion,MONTHLY_PARSER_VERSION);
+  const analysis=createAnalysisService(indexMonthly(unpackMonthly(pack)));
+  const selected=analysis.consumer('000000000123',{},null,{pointName:'Учебный потребитель'});
+  assert.deepEqual(selected.result.meter.values,[107,-573]);assert.equal(selected.result.meter.rowCount,2);
+  const currentEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  const cached=await service.fromDatabase(path,'consumption',currentEtag);assert.equal(cached.unchanged,true);assert.equal(cached.stale,false);assert.equal(metadata,3);
 });
 
 test('prepared HTTP endpoint serves gzip package, rejects traversal and deduplicates simultaneous requests', async t => {
