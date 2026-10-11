@@ -32,7 +32,7 @@ self.onmessage = async ({ data }) => {
       journalControllers.set(id, controller);
       try {
       if (action === 'loadPreparedJournal') {
-        const { fetchPrepared } = await import('./prepared-cache.js?v=19');
+        const { fetchPrepared } = await import('./prepared-cache.js?v=20');
         ({ data: pack, ...cacheInfo } = await fetchPrepared({ ...payload, signal: controller.signal }));
       } else {
         ensureXLSX();
@@ -64,7 +64,7 @@ self.onmessage = async ({ data }) => {
       const options = { onProgress: progress => self.postMessage({ id, progress }), assertCurrent: () => {
         if (token !== reportSequence || service !== analysisService) throw new Error('Формирование отчёта отменено. Потребление остаётся загруженным.');
       } };
-      const report = await service.reportAsync(payload.settings, options);
+      const report = await service.reportAsync(payload.settings, { ...options, compact: true });
       const plan = await planAnomalyWorkbooks(report, payload.context, options);
       options.assertCurrent(); reportPlan = { plan, token, service };
       self.postMessage({ id, result: { token, count: plan.count, parts: plan.parts.map((part, index) => ({ index, count: part.count })) } }); return;
@@ -81,7 +81,7 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: { buffer } }, [buffer]); return;
     }
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=19');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=20');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');

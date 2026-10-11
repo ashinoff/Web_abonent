@@ -110,7 +110,7 @@ export function createAnalysisService(model, records = [], journals = {}) {
   }
   const metadata = { months: model.months, warnings: model.warnings, rowCount: model.rows.length, accountCount: model.accounts.size, missingTP: model.rows.filter(r => !r.tp).length,
     ...(journalAnalysis ? { journalCoverage: journalAnalysis.coverage() } : {}) };
-  function* generateReport(settings) {
+  function* generateReport(settings, compact = false) {
     const rows = [], counts = { accounts: model.accounts.size, selected: 0, red: 0, amber: 0, green: 0, dead: 0, unknown: 0, journalCheck: 0, journalHigh: 0 };
     let consumption = 0, incompleteTotal = false, lossKwh = 0;
     let done = 0;
@@ -122,6 +122,21 @@ export function createAnalysisService(model, records = [], journals = {}) {
       if (result.total != null) consumption += result.total;
       lossKwh += result.lossKwh || 0;
       if (!['red', 'amber'].includes(result.cls) || !(result.score > 0)) continue;
+      if (compact) {
+        // The field report needs grouped flags, not chart series, measurements,
+        // dated examples or a second copy of every correlation case.
+        const flags = result.flags.map(flag => ({ code: flag.code, title: flag.title, source: flag.source, pts: flag.pts, supportingEvidence: flag.supportingEvidence,
+          detail: flag.source === 'events' ? '' : flag.source === 'instant' ? String(flag.detail || '').split(' Наблюдений:')[0] : flag.detail,
+          serial: flag.serial, count: flag.count, first: flag.first, last: flag.last, month: flag.month, months: flag.source === 'correlation' ? flag.months : undefined,
+          conditional: flag.conditional, informational: flag.informational }));
+        const journalCoverage = result.journal && Object.fromEntries(['instant', 'events'].map(role => [role, {
+          loaded: result.journal.coverage[role].loaded, matchedMeters: result.journal.coverage[role].matchedMeters,
+        }]));
+        rows.push({ account: m.account, serials: m.serials, journalCoverage, result: { cls: result.cls, score: result.score,
+          monthlyScore: result.monthlyScore, journalScore: result.journalScore, journalPriority: result.journalPriority,
+          meter: { id: m.id, account: m.account, pointCount: m.pointCount }, flags } });
+        continue;
+      }
       const substantive = result.flags.filter(flag => flag.source == null || flag.pts > 0 || flag.supportingEvidence === true);
       const reasons = substantive.map(flag => `${flag.title}: ${flagObservation(flag)}`);
       if (result.cls === 'dead') reasons.push('Все известные месячные объёмы не превышают 3 кВт·ч; проверить, действует ли договор и не было ли отключения.');
@@ -145,7 +160,7 @@ export function createAnalysisService(model, records = [], journals = {}) {
       || String(a.account).localeCompare(String(b.account), 'ru', { numeric: true }));
     counts.selected = rows.length;
     const selected = new Set(rows.map(row => row.result.meter.id));
-    const caseDetails = journalAnalysis?.reportCases?.(selected, new Map(rows.map(row => [row.result.meter.id, row.result]))) || [];
+    const caseDetails = compact ? [] : journalAnalysis?.reportCases?.(selected, new Map(rows.map(row => [row.result.meter.id, row.result]))) || [];
     for (const item of caseDetails) annotateJournalContext(item, model.accounts.get(item.account) || []);
     counts.journalCases = caseDetails.length;
     counts.combinedCases = caseDetails.filter(item => item.scenario === 'combined').length;
@@ -153,7 +168,7 @@ export function createAnalysisService(model, records = [], journals = {}) {
     return { ...metadata, months: model.months, rows, counts, settings: normalizeSettings(settings), scope: 'Жёлтые и красные ЛС с баллами; все ТУ — индивидуальные алгоритмы потребления',
       coverage: journalAnalysis?.coverage() || { instant: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, events: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, monthlyFirst: model.months.length ? `${model.months[0].y}-${String(model.months[0].m + 1).padStart(2, '0')}` : null, monthlyLast: model.months.length ? `${model.months.at(-1).y}-${String(model.months.at(-1).m + 1).padStart(2, '0')}` : null },
       unmatched: journalAnalysis?.unmatched || { instant: { meters: 0, rows: 0, reasons: [] }, events: { meters: 0, rows: 0, reasons: [] } },
-      events: journalAnalysis?.reportEvents(selected) || [], metrics: journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
+      events: compact ? [] : journalAnalysis?.reportEvents(selected) || [], metrics: compact ? [] : journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
   }
   return {
     summary: metadata,
@@ -185,8 +200,8 @@ export function createAnalysisService(model, records = [], journals = {}) {
       do { step = iterator.next(); } while (!step.done);
       return step.value;
     },
-    async reportAsync(settings, { onProgress = () => {}, assertCurrent = () => {} } = {}) {
-      const iterator = generateReport(normalizeSettings(settings));
+    async reportAsync(settings, { onProgress = () => {}, assertCurrent = () => {}, compact = false } = {}) {
+      const iterator = generateReport(normalizeSettings(settings), compact);
       for (;;) {
         assertCurrent();
         const step = iterator.next();

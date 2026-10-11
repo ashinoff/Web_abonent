@@ -30,6 +30,25 @@ test('absent journals retain the exact monthly result and missing source reporti
   const report = make().report({}); assert.equal(report.coverage.instant.loaded, false); assert.equal(report.coverage.events.loaded, false);
 });
 
+test('compact field report keeps selected cards and grouped flags without copying histories or raw journal details', async () => {
+  const service = make([row()], [record()], { instant: instantBook([electrical]), events: eventBook([
+    ['000123', '2026-04-05T10:30:00', opening + ' RawExample'.repeat(500)],
+    ['000123', '2026-04-06T10:30:00', opening],
+  ]) });
+  const before = service.consumer('001', {}).result, detailed = service.report({});
+  const compact = await service.reportAsync({}, { compact: true });
+  assert.deepEqual(compact.rows.map(r => [r.account, r.result.cls, r.result.score, r.serials]),
+    detailed.rows.map(r => [r.account, r.result.cls, r.result.score, r.serials]));
+  assert.ok(compact.rows.length > 0);
+  assert.deepEqual(compact.events, []); assert.deepEqual(compact.metrics, []); assert.deepEqual(compact.caseDetails, []);
+  const result = compact.rows[0].result, openingFlag = result.flags.find(flag => flag.code === 'J46_TERMINAL_COVER');
+  assert.equal(openingFlag.count, 2); assert.equal(openingFlag.first, '2026-04-05T10:30:00'); assert.equal(openingFlag.last, '2026-04-06T10:30:00');
+  assert.equal(result.meter.values, undefined); assert.equal(result.journal, undefined);
+  assert.doesNotMatch(JSON.stringify(compact), /RawExample/);
+  assert.equal(compact.rows[0].journalCoverage.events.matchedMeters, 1);
+  assert.deepEqual(service.consumer('001', {}).result, before);
+});
+
 test('event correlation preserves monthly class, score and loss and never creates instantaneous energy loss', () => {
   const before = make().consumer('001', {}).result;
   const after = make([row()], [record()], { events: eventBook(), instant: instantBook([electrical]) }).consumer('001', {}).result;
