@@ -169,18 +169,21 @@ function reportClock(context) {
 }
 
 /** Split the compact rows without repeating cards or allocating all XLSX files. */
-export async function planAnomalyWorkbooks(report, context = {}, { maxBytes = 12 * 1024 * 1024, onProgress = () => {}, assertCurrent = () => {} } = {}) {
-  report = selectedReport(report);
-  const clock = reportClock(context), sheet = reportSheet(report, context, clock.generated), encoder = new TextEncoder();
+export function planAnomalyWorkbooks(report, context = {}, options = {}) {
+  return planCompactWorkbooks(reportSheet(selectedReport(report), context), context, options);
+}
+export async function planCompactWorkbooks(sheet, context = {}, { maxBytes = 12 * 1024 * 1024, onProgress = () => {}, assertCurrent = () => {} } = {}) {
+  const clock = reportClock(context), encoder = new TextEncoder();
   const overhead = 8192 + sheetXML({ ...sheet, rows: [] }, clock.generated, MAX_REPORT_XML_BYTES).byteLength;
   const budget = Math.min(MAX_REPORT_XML_BYTES, maxBytes);
   if (!Number.isFinite(budget) || budget <= overhead) throw new Error('Недостаточный размер части Excel-отчёта.');
   const parts = []; let current;
+  const rowAt = index => typeof sheet.rows.at === 'function' ? sheet.rows.at(index) : sheet.rows[index];
   const begin = () => { current = { start: 0, end: 0, xmlBytes: overhead }; parts.push(current); };
   begin();
   for (let index = 0; index < sheet.rows.length; index++) {
     assertCurrent();
-    const cost = encoder.encode(dataRowXML(sheet.rows[index], index, sheet)).byteLength;
+    const cost = encoder.encode(dataRowXML(rowAt(index), index, sheet)).byteLength;
     if (overhead + cost > budget) throw new Error('Одна карточка превышает размер части Excel. Проверьте длину исходных причин.');
     if (current.end > current.start && (current.xmlBytes + cost > budget || current.end - current.start >= MAX_ROWS - 5)) { begin(); current.start = current.end = index; }
     current.end = index + 1; current.xmlBytes += cost;
@@ -190,15 +193,17 @@ export async function planAnomalyWorkbooks(report, context = {}, { maxBytes = 12
   return { count: sheet.rows.length, ...clock, parts: parts.map((part, index) => ({
     count: part.end - part.start, xmlBytes: part.xmlBytes,
     sheets: [{ ...sheet, subtitle: `${sheet.subtitle}. Часть ${index + 1} из ${parts.length}`, rows: {
-      length: part.end - part.start, at: i => sheet.rows[part.start + i],
+      length: part.end - part.start, at: i => rowAt(part.start + i),
     } }],
   })) };
 }
 
 /** Build a styled XLSX in the existing worker, without another workbook dependency. */
 export function buildAnomalyWorkbook(report, XLSX, context = {}) {
-  const clock = reportClock(context);
-  return writeWorkbook([reportSheet(selectedReport(report), context, clock.generated)], XLSX, clock);
+  return buildCompactWorkbook(reportSheet(selectedReport(report), context), XLSX, context);
+}
+export function buildCompactWorkbook(sheet, XLSX, context = {}) {
+  return writeWorkbook([sheet], XLSX, reportClock(context));
 }
 export function buildAnomalyWorkbookPart(plan, index, XLSX, onProgress = () => {}) {
   if (!plan?.parts?.[index]) throw new Error('Часть отчёта недоступна. Сформируйте отчёт заново.');

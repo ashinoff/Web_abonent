@@ -170,6 +170,45 @@ export function createAnalysisService(model, records = [], journals = {}) {
       unmatched: journalAnalysis?.unmatched || { instant: { meters: 0, rows: 0, reasons: [] }, events: { meters: 0, rows: 0, reasons: [] } },
       events: compact ? [] : journalAnalysis?.reportEvents(selected) || [], metrics: compact ? [] : journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
   }
+  function* generateJournalReport(settings) {
+    const rows = []; let done = 0;
+    const coverage = journalAnalysis?.coverage();
+    if (!coverage?.instant.loaded && !coverage?.events.loaded) throw new Error('Для отчёта загрузите журнал 31 или 46 выбранной РЭС.');
+    for (const item of journalAnalysis.flaggedMeters()) {
+      if (done++ % 50 === 0) yield { phase: 'analysis', done: done - 1, total: coverage.instant.totalMeters + coverage.events.totalMeters };
+      let consumption = null;
+      if (item.binding) {
+        // A different TU on the same account must not supply this PU's flags.
+        const result = this.consumer(item.binding.account, settings, null, item.binding.fields).result;
+        const flags = result.flags.filter(flag => !flag.source || flag.source === 'correlation' && idKey(flag.serial) === idKey(item.serial) && flag.pts > 0);
+        const cases = journalAnalysis.casesForSerial(idKey(item.serial));
+        const comparisonSummary = flag => {
+          const match = cases.find(item => item.id === flag.caseId); if (!match) return undefined;
+          annotateJournalContext(match, model.accounts.get(item.binding.account));
+          const magnitude = period => Math.max(-Infinity, ...Object.values(period.comparisons || {}).filter(value => value.available && value.eligible).map(value => value.exactDropPercent ?? value.dropPercent));
+          const period = [...match.months].sort((a, b) => magnitude(b) - magnitude(a))[0];
+          return { months: match.months.map(item => item.month).filter(Boolean), month: period.month, value: period.value,
+            comparisons: Object.fromEntries(Object.entries(period.comparisons).map(([key, value]) => [key, { available: value.available, value: value.value, dropPercent: value.dropPercent, reason: value.reason }])),
+            temporalRelation: period.temporalRelation, seasonalAlternative: period.seasonalAlternative,
+            preExistingReason: period.preExistingDecline?.reason, commonDecline: period.peerContext?.commonDecline ? period.peerContext.detail : '' };
+        };
+        consumption = { account: result.meter.account, point: [item.binding.fields.pointName, item.binding.fields.pointNumber && '№ ' + item.binding.fields.pointNumber, item.binding.fields.point && 'СТЕК ' + item.binding.fields.point].filter(Boolean).join(' · '),
+          cls: result.cls, score: result.score, incomplete: result.meter.incomplete, negative: result.meter.negative,
+          flags: flags.map(flag => {
+            const comparison = flag.source === 'correlation' ? comparisonSummary(flag) : undefined;
+            return { code: flag.code, title: flag.title, detail: comparison ? '' : flagObservation(flag), source: flag.source,
+              ...(comparison ? { comparison } : { month: flag.month, months: flag.months }) };
+          }) };
+      }
+      // The prepared pack already bounds examples; do not retain bindings,
+      // source rows, chart series or the raw J-column in the new report.
+      const { binding, ...finding } = item;
+      rows.push({ ...finding, consumption });
+    }
+    rows.sort((a, b) => (a.consumption?.cls === 'red' ? 0 : 1) - (b.consumption?.cls === 'red' ? 0 : 1)
+      || (b.consumption?.score || 0) - (a.consumption?.score || 0) || a.serial.localeCompare(b.serial, 'ru', { numeric: true }));
+    return { rows, coverage, counts: { selected: rows.length }, scope: 'ПУ с флагами журналов 31 или 46; потребление собственной ЛС + ТУ' };
+  }
   return {
     summary: metadata,
     tps: () => [...tpRows].map(([key, g]) => ({ key, name: g.name, accounts: g.accounts.size })).sort((a,b) => a.name.localeCompare(b.name,'ru',{numeric:true})),
@@ -202,6 +241,16 @@ export function createAnalysisService(model, records = [], journals = {}) {
     },
     async reportAsync(settings, { onProgress = () => {}, assertCurrent = () => {}, compact = false } = {}) {
       const iterator = generateReport(normalizeSettings(settings), compact);
+      for (;;) {
+        assertCurrent();
+        const step = iterator.next();
+        if (step.done) return step.value;
+        onProgress(step.value);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    },
+    async journalReportAsync(settings, { onProgress = () => {}, assertCurrent = () => {} } = {}) {
+      const iterator = generateJournalReport.call(this, normalizeSettings(settings));
       for (;;) {
         assertCurrent();
         const step = iterator.next();

@@ -59,13 +59,14 @@ self.onmessage = async ({ data }) => {
     if (action === 'exportAnomalies') {
       if (!analysisService) throw new Error('Файл потребления не загружен.');
       ensureXLSX();
-      const { planAnomalyWorkbooks } = await import('./anomaly-report.js');
+      const journalReport = payload.kind === 'journals';
       const service = analysisService, token = ++reportSequence; reportPlan = null;
       const options = { onProgress: progress => self.postMessage({ id, progress }), assertCurrent: () => {
         if (token !== reportSequence || service !== analysisService) throw new Error('Формирование отчёта отменено. Потребление остаётся загруженным.');
       } };
-      const report = await service.reportAsync(payload.settings, { ...options, compact: true });
-      const plan = await planAnomalyWorkbooks(report, payload.context, options);
+      const report = journalReport ? await service.journalReportAsync(payload.settings, options) : await service.reportAsync(payload.settings, { ...options, compact: true });
+      const planner = await import(journalReport ? './journal-report.js' : './anomaly-report.js');
+      const plan = await (journalReport ? planner.planJournalWorkbooks : planner.planAnomalyWorkbooks)(report, payload.context, options);
       options.assertCurrent(); reportPlan = { plan, token, service };
       self.postMessage({ id, result: { token, count: plan.count, parts: plan.parts.map((part, index) => ({ index, count: part.count })) } }); return;
     }

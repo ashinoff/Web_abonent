@@ -224,5 +224,30 @@ export function createJournalAnalysis(model, records, journals = {}) {
     }
     return out;
   }
-  return { supplement, coverage, unmatched, reportEvents, reportMetrics, reportCases: correlation.reportCases, serialsForRows, stats: { eventRows, eventGroups, correlation: correlation.stats } };
+  function* flaggedMeters() {
+    // Selection comes from journal findings, including conditional observations,
+    // and never from an account's monthly score. Unmapped PUs remain visible.
+    const keys = new Set([...instantBySerial.keys(), ...eventsBySerial.keys()]);
+    for (const key of keys) {
+      const sample = instantBySerial.get(key), eventFlags = new Map();
+      for (const event of eventsBySerial.get(key) || []) for (const kind of event.classifications) {
+        let flag = eventFlags.get(kind.code);
+        if (!flag) {
+          flag = { code: kind.code, title: kind.title, recommendation: kind.recommendation, count: 0, first: event.first, last: event.last, months: new Map() };
+          eventFlags.set(kind.code, flag);
+        }
+        const count = registrations(event);
+        flag.count += count; flag.first = minDate([flag.first, event.first]); flag.last = maxDate([flag.last, event.last]);
+        flag.months.set(event.month, (flag.months.get(event.month) || 0) + count);
+      }
+      const instantFlags = sample?.signals || [];
+      if (!instantFlags.length && !eventFlags.size) continue;
+      const binding = bindings.get(key);
+      yield { serial: String(sample?.serial || eventsBySerial.get(key)?.[0]?.serial || key), binding,
+        mappingReason: binding ? '' : reasons.get(key) || 'Серийный номер отсутствует в реестре.',
+        instantPresent: !!sample, eventsPresent: eventsBySerial.has(key), instantFlags,
+        eventFlags: [...eventFlags.values()].map(flag => ({ ...flag, months: [...flag.months].sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => ({ month, count })) })) };
+    }
+  }
+  return { supplement, coverage, unmatched, reportEvents, reportMetrics, flaggedMeters, casesForSerial: correlation.casesForSerial, reportCases: correlation.reportCases, serialsForRows, stats: { eventRows, eventGroups, correlation: correlation.stats } };
 }

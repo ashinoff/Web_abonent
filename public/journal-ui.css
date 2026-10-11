@@ -20,6 +20,13 @@
 .journal-metrics dl>div{display:flex;gap:10px;justify-content:space-between;padding:5px 0;border-bottom:1px solid #e5eaf1}
 .journal-metrics dt{font-size:10px;color:#7b8b9e}
 .journal-metrics dd{font-size:11px;font-weight:600;color:#55728d;margin:0;white-space:nowrap}
+.electrical-findings{border-top:1px solid #e3e9ef;padding-top:18px}
+.electrical-findings .section-heading{flex-wrap:wrap;gap:8px}
+.electrical-findings .section-heading h3{line-height:1.45}
+.electrical-finding{margin:10px 0;padding:11px 13px;background:#f6f2f9;border:1px solid #ded6e8;border-radius:9px;font-size:12px}
+.electrical-finding summary{cursor:pointer;color:#5d718b;font-weight:600;line-height:1.6;overflow-wrap:anywhere}
+.electrical-finding summary small{display:block;color:#8b769d;font-weight:400}
+.electrical-finding p{font-size:11px;line-height:1.7;color:#746880;overflow-wrap:anywhere;margin:9px 0 0}
 .chart-event-legend{display:flex;flex-wrap:wrap;gap:8px 13px;color:#7b8b9e;font-size:10px;margin-top:13px}
 .chart-event-legend>small{flex-basis:100%;font-size:9px;line-height:1.65;color:#8895a7}
 .chart-event-legend span::before{content:'';display:inline-block;width:8px;height:8px;vertical-align:middle;margin-right:6px;background:var(--event-color);border-radius:2px}

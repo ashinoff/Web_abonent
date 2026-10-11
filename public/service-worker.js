@@ -1,7 +1,8 @@
-const version = 'abonent-shell-2026-10-11-v20';
+const version = 'abonent-shell-2026-10-12-v21';
 const shell = ['./','./index.html','./styles.css','./config.js','./app.js','./worker.js',
   './account-ui.js','./admin-ui.js','./user-notifications.js','./user-note-editor.js','./map-library.js','./map-routes.js',
   './journals.js','./journal-analysis.js','./journal-correlation.js','./journal-peer-context.js','./anomaly-report.js','./journal-ui.css','./analysis-observations.js',
+  './journal-report.js','./journal-report-data.js','./journal-report-ui.js',
   './core.js','./monthly.js','./analysis-service.js','./analysis-engine.js','./analysis-settings.js',
   './analysis-tuning.js','./analysis-ui.js','./analysis-help.js','./diagnostics-ui.js','./analysis-chart.js','./chart-years.js','./demo.js',
   './download-buffer.js','./gestures.js','./notes-ui.js','./notes-map-ui.js','./notes-map-data.js','./readings.js','./record-sections.js',
