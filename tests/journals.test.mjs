@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import XLSX from '@e965/xlsx';
-import { readJournalWorkbook, eventKind, eventKinds, serialKey, parseJournalTimestamp, INSTANT_FIELDS, INSTANT_METRICS } from '../public/journals.js';
+import { readJournalWorkbook, eventKind, eventKinds, serialKey, parseJournalTimestamp, INSTANT_FIELDS, INSTANT_METRICS, createEventAggregator, normalizeEventPack, EVENTS_PACKAGE_VERSION, eventClassification, detectEventHeader } from '../public/journals.js';
 
 const eventHeaders=['ТУ','Тип ПУ','Серийный','Абонент','Лимит','Дата и время','Тип','Событие','Инициатор','Дополнительная информация'];
 const instantHeaders=['Точка учета','Время',
@@ -26,11 +26,14 @@ const instant = (rows,bookType='xlsx') => excel({'Лист1':[
 ]},bookType);
 const event = (serial,at,details) => ['private-point','private-model',serial,'private-name','private-limit',at,'private-type','private-event','private-author',details];
 
-for(const bookType of ['xlsx','biff8']) test(`${bookType}: journal46 retains only C/F/J, exact information and civil time, deduplicates`,()=>{
+for(const bookType of ['xlsx','biff8']) test(`${bookType}: journal46 retains C/F/J evidence in compact monthly groups and counts raw duplicate registrations`,()=>{
   const text='Вскрытый элемент устройства "Клеммная крышка"\nПолное исходное пояснение';
   const pack=readJournalWorkbook(excel({'Лист1':[['События за период'],eventHeaders,event('000123','06.03.2026 12:55:33',text),event('000123','06.03.2026 12:55:33',text),event('000123','06.03.2026 12:55:34','Неизвестный исходный текст')]},bookType),XLSX,'events');
-  assert.deepEqual(pack.rows,[['000123','2026-03-06T12:55:33',text],['000123','2026-03-06T12:55:34','Неизвестный исходный текст']]);
-  assert.equal(pack.stats.rows,3);assert.equal(pack.stats.accepted,2);assert.equal(pack.stats.duplicates,1);
+  assert.equal(pack.rows,undefined);assert.equal(pack.aggregationVersion,EVENTS_PACKAGE_VERSION);assert.equal(pack.groups.length,2);
+  const opening=pack.groups.find(g=>g.codes.length),other=pack.groups.find(g=>!g.codes.length);
+  assert.equal(opening.serial,'000123');assert.equal(opening.count,2);assert.equal(opening.examples[0].at,'2026-03-06T12:55:33');assert.equal(opening.examples[0].description,text);
+  assert.equal(other.first,'2026-03-06T12:55:34');assert.equal(other.examples[0].description,'Неизвестный исходный текст');
+  assert.equal(pack.stats.rows,3);assert.equal(pack.stats.accepted,3);assert.equal(pack.stats.repeatedRows,1);
   assert.ok(!JSON.stringify(pack).includes('private-'));
 });
 
@@ -46,7 +49,7 @@ test('events with invalid date are skipped and identities keep explicit leading 
   const book=XLSX.utils.book_new(),sheet=XLSX.utils.aoa_to_sheet([eventHeaders,event(123,'01.01.2026','Вскрытый элемент устройства "Корпус"'),event('000123','31.02.2026','Недостоверная дата'),event(1234567890123456,'01.01.2026','Потерянный номер')]);
   sheet.C2.z='000000';XLSX.utils.book_append_sheet(book,sheet,'Лист1');
   const pack=readJournalWorkbook(XLSX.write(book,{type:'buffer',bookType:'xlsx'}),XLSX,'events');
-  assert.equal(pack.rows[0][0],'000123');assert.equal(pack.stats.invalidDates,1);assert.equal(pack.stats.invalidSerials,1);assert.equal(pack.stats.skipped,2);
+  assert.equal(pack.groups[0].serial,'000123');assert.equal(pack.stats.invalidDates,1);assert.equal(pack.stats.invalidSerials,1);assert.equal(pack.stats.skipped,2);
   assert.equal(serialKey(' 00 A 12 '),'00a12');assert.notEqual(serialKey('00123'),serialKey('123'));
 });
 
@@ -71,7 +74,7 @@ test('compound additional information retains distinct active categories and eva
   assert.equal(eventKind(opening+'\n'+magnetic).code,'J46_TERMINAL_COVER');
   const details=opening+'\n'+magnetic;
   const pack=readJournalWorkbook(excel({'Лист1':[eventHeaders,event('000123','01.08.2026',details)]}),XLSX,'events');
-  assert.equal(pack.rows.length,1);assert.equal(pack.rows[0][2],details);
+  assert.equal(pack.groups.length,1);assert.equal(pack.groups[0].examples[0].description,details);assert.deepEqual(pack.groups[0].codes,['J46_MAGNET_DC','J46_TERMINAL_COVER']);
 });
 
 for(const bookType of ['xlsx','biff8']) test(`${bookType}: journal31 finds explicit final meter token and maps all 46 metrics without GUID/path storage`,()=>{
@@ -143,8 +146,8 @@ test('journal headers and size limits fail explicitly, rather than silently trun
   assert.throws(()=>readJournalWorkbook(excel({'Лист1':[['other header'],['data']]}),XLSX,'instant'),/шапка/);
   const moved=[...eventHeaders];[moved[2],moved[3]]=[moved[3],moved[2]];
   assert.throws(()=>readJournalWorkbook(excel({'Лист1':[moved,event('001','01.01.2026','Корпус')]}),XLSX,'events'),/шапка/);
-  const fake={...XLSX,read:()=>({SheetNames:['Large'],Sheets:{Large:{'!ref':'A1:J500083','!fullref':'A1:J600000'}}})};
-  assert.throws(()=>readJournalWorkbook(new Uint8Array([0x50,0x4b]),fake,'events'),/500 000/);
+  const fake={...XLSX,read:()=>({SheetNames:['Large'],Sheets:{Large:{'!ref':'A1:J1000083','!fullref':'A1:J1100000'}}})};
+  assert.throws(()=>readJournalWorkbook(new Uint8Array([0x50,0x4b]),fake,'events'),/1 000 000/);
   assert.throws(()=>readJournalWorkbook(new Uint8Array([1,2,3]),XLSX,'events'),/Excel/);
 });
 
@@ -247,4 +250,65 @@ test('all twelve profile parameters check ordering/signs as data quality, with i
   assert.ok(flag);assert.equal(flag.informational,true);assert.equal(flag.timestampBasis,'report_period');assert.equal(flag.first,null);assert.deepEqual(flag.months,[]);for(const name of ['A+','A−','R+','R−'])assert.ok(flag.detail.includes(name));
   const safe={forwardMin:0.205,forwardAvg:0.2,forwardMax:null,reverseAvg:null,reverseMax:0.199,reactiveImportMin:0,reactiveImportMax:1};
   const normal=readJournalWorkbook(instant([row('000123','31.08.2026',safe)]),XLSX,'instant');assert.ok(!normal.meters[0].signals.some(s=>s.code==='J31_PROFILE_QUALITY'||s.code==='J31_REVERSE_PROFILE'));
+});
+
+test('compact events preserve month/day counts and actual edge descriptions regardless of row ordering',()=>{
+  const agg=createEventAggregator(),desc=extra=>'Вскрытый элемент устройства "Клеммная крышка"; '+extra;
+  for(const [at,info]of [['2026-08-20T10:00:00','middle'],['2026-08-01T09:00:00','first'],['2026-08-25T13:00:00','last'],['2026-08-20T10:01:00','variant']])agg.add('000123',at,desc(info));
+  const pack=agg.finish(),g=pack.groups[0];
+  assert.equal(g.count,4);assert.equal(g.first,'2026-08-01T09:00:00');assert.equal(g.last,'2026-08-25T13:00:00');assert.equal(g.days.length,3);assert.deepEqual(g.days[1],[20,'2026-08-20T10:00:00','2026-08-20T10:01:00',2]);
+  assert.equal(g.examples.length,3);assert.equal(g.examples[0].description,desc('first'));assert.equal(g.examples.at(-1).description,desc('last'));assert.ok(g.examplesTruncated);
+  assert.equal(pack.stats.repeatedRows,3);assert.equal(pack.rows,undefined);
+});
+
+test('active category signatures distinguish compounds while inactive variant messages remain one OTHER group',()=>{
+  const agg=createEventAggregator(),cover='Вскрытый элемент устройства "Клеммная крышка"',magnet='Вскрытый элемент устройства "Магнитная пломба постоянного поля"';
+  agg.add('000123','2026-08-01T10:00:00',cover);agg.add('000123','2026-08-01T10:01:00',cover+'\n'+magnet);agg.add('000123','2026-08-01T10:02:00',magnet+'\n'+cover);
+  for(let i=0;i<1000;i++)agg.add('000123','2026-08-02T10:00:00','Закрытие корпуса, сообщение '+i);
+  const pack=agg.finish();assert.equal(pack.groups.length,3);assert.equal(pack.stats.accepted,1003);
+  const compound=pack.groups.find(g=>g.codes.length===2),other=pack.groups.find(g=>!g.codes.length);
+  assert.deepEqual(compound.codes,['J46_MAGNET_DC','J46_TERMINAL_COVER']);assert.equal(compound.count,2);assert.equal(other.count,1000);assert.ok(other.examples.length<=3);
+  assert.equal(eventClassification('J46_TERMINAL_COVER').kind,'opening');assert.equal(eventClassification('not-a-kind'),null);
+});
+
+test('identical timestamp repeats are counted as registrations and do not allocate raw event rows',()=>{
+  const agg=createEventAggregator(),text='Вскрытый элемент устройства "Клеммная крышка"';
+  for(let i=0;i<600001;i++)agg.add('000123','2026-08-01T10:00:00',text);
+  const pack=agg.finish();assert.equal(pack.stats.rows,600001);assert.equal(pack.stats.accepted,600001);assert.equal(pack.groups.length,1);assert.equal(pack.groups[0].count,600001);assert.equal(pack.groups[0].days[0][3],600001);assert.equal(pack.stats.repeatedRows,600000);
+  assert.equal(pack.groups[0].examples.length,1);assert.equal(pack.rows,undefined);assert.ok(JSON.stringify(pack).length<2000);assert.ok(pack.warnings.some(w=>w.includes('не число независимых вскрытий')));
+});
+
+test('event groups do not merge different meters, months or activated/restored states',()=>{
+  const agg=createEventAggregator(),opened='Вскрытый элемент устройства "Корпус"';
+  agg.add('000123','2026-08-01T10:00:00',opened);agg.add('000123','2026-09-01T10:00:00',opened);agg.add('123','2026-08-01T10:00:00',opened);agg.add('000123','2026-08-01T10:00:00','Корпус закрыт');
+  const pack=agg.finish();assert.equal(pack.groups.length,4);assert.equal(pack.stats.meters,2);assert.equal(pack.groups.filter(g=>!g.codes.length).length,1);
+});
+
+test('legacy offline rows compact in place without fabricating excluded duplicate observations',()=>{
+  const description='Вскрытый элемент устройства "Клеммная крышка"',legacy={format:1,role:'events',rows:[['000123','2026-08-01T10:00:00',description],['000123','2026-08-01T10:01:00',description]],stats:{rows:9,accepted:2,duplicates:7},warnings:['old source warning']};
+  const pack=normalizeEventPack(legacy);assert.equal(pack,legacy);assert.equal(legacy.rows,undefined);assert.equal(pack.groups.length,1);assert.equal(pack.groups[0].count,2);assert.equal(pack.stats.accepted,2);assert.equal(pack.stats.legacyExcludedDuplicates,7);assert.ok(pack.warnings.includes('old source warning'));assert.ok(pack.warnings.some(w=>w.includes('исключённые дубли не восстанавливаются')));
+  assert.equal(normalizeEventPack(pack),pack);
+  assert.throws(()=>normalizeEventPack({format:1,role:'registry',rows:[]}),/формат/);
+});
+
+for(const bookType of ['xlsx','biff8'])test(`${bookType}: strict three-column events support header and headerless extracted values`,()=>{
+  const rows=[['000123','09.10.2025 08:49:37','Вскрытый элемент устройства "Клеммная крышка"'],['000123','09.10.2025 08:49:38','Вскрытый элемент устройства "Клеммная крышка"']];
+  for(const withHeader of [false,true]) {
+    const data=withHeader?[['Серийный','Дата и время','Дополнительная информация'],...rows]:rows;
+    const pack=readJournalWorkbook(excel({'Лист1':data},bookType),XLSX,'events');assert.equal(pack.stats.accepted,2);assert.equal(pack.groups.length,1);assert.equal(pack.groups[0].serial,'000123');assert.equal(pack.groups[0].first,'2025-10-09T08:49:37');
+  }
+  const shifted=[['Serial','bad date','text'],...rows.map(r=>[...r,'unrelated column'])];
+  assert.throws(()=>readJournalWorkbook(excel({'Лист1':shifted},bookType),XLSX,'events'),/шапка/);
+});
+
+test('aggregator validates raw source rows and source-count limit, keeping snapshots independent',()=>{
+  const agg=createEventAggregator(),text='Вскрытый элемент устройства "Корпус"';
+  assert.equal(agg.add(null,null,null),false);assert.equal(agg.stats.rows,0);
+  assert.equal(agg.add({v:123,z:'000000'},'2026-08-01T10:00:00',text),true);
+  const first=agg.finish();assert.equal(first.groups[0].serial,'000123');
+  agg.add('000123','2026-08-01T10:01:00',text);assert.equal(first.groups[0].days[0][3],1);
+  agg.add('','2026-08-01T10:00:00',text);agg.add('000123','31.02.2026',text);agg.add('000123','2026-08-01T10:00:00','');
+  const pack=agg.finish();assert.equal(pack.stats.invalidSerials,1);assert.equal(pack.stats.invalidDates,1);assert.equal(pack.stats.emptyDescriptions,1);assert.equal(pack.stats.accepted,2);
+  agg.stats.rows=1000000;assert.throws(()=>agg.add('000123','2026-08-01T10:00:00',text),/1 000 000/);
+  assert.deepEqual(detectEventHeader(eventHeaders,10),{serial:2,time:5,info:9});assert.equal(detectEventHeader(['Серийный','Дата и время','Дополнительная информация'],4),null);
 });

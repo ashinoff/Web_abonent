@@ -1,7 +1,7 @@
 import { gzip } from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, stat } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSource, sourceRoleKeys } from './public/source.js';
-import { JOURNAL_ANALYSIS_VERSION } from './public/journals.js';
+import { JOURNAL_ANALYSIS_VERSION, EVENTS_PACKAGE_VERSION } from './public/journals.js';
 import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
@@ -50,10 +50,25 @@ export function preparationLimits(containerMB) {
   const packageMB = Math.min(256, Math.max(64, Math.floor(containerMB / 8)));
   return { heapMB, childMB, combinedMB, packageMB };
 }
-function runLimitedChild(args, containerMB,signal) {
-  const { heapMB, childMB, combinedMB } = preparationLimits(containerMB);
+export async function preparationChildFlags(path, role, filename, containerMB) {
+  const { heapMB, childMB } = preparationLimits(containerMB);
+  let streaming = false;
+  if (role === 'events' && !/\.xlsb$/i.test(filename || '')) {
+    const file = await open(path, 'r'), signature = Buffer.alloc(4);
+    try { await file.read(signature, 0, 4, 0); } finally { await file.close(); }
+    streaming = signature.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  }
+  const streamHeapMB = streaming ? Math.min(heapMB, Math.max(64, childMB - 128)) : heapMB;
+  // Streaming XML allocates many short-lived tokens. Bound young space too on
+  // small plans, so V8's reservation stays inside the unchanged RSS guard.
+  return [`--max-old-space-size=${streamHeapMB}`,
+    ...(streaming && streamHeapMB < heapMB ? ['--max-semi-space-size=4'] : [])];
+}
+async function runLimitedChild(args, containerMB,signal) {
+  const { childMB, combinedMB } = preparationLimits(containerMB);
+  const flags = await preparationChildFlags(args[0], args[2], args[3], containerMB);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [`--max-old-space-size=${heapMB}`, childPath, ...args],
+    const child = spawn(process.execPath, [...flags, childPath, ...args],
       { stdio: ['ignore','ignore','pipe'], env: { PATH: process.env.PATH || '', TZ: process.env.TZ || 'UTC' } });
     let stderr = '', reason = null, checking = false;
     const abort=()=>{reason='Подготовка остановлена администратором.';child.kill('SIGKILL');};
@@ -89,11 +104,11 @@ const validDownloadUrl = value => {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port && ['yandex.ru','yandex.net','yandex.com','yandexdisk.com'].some(h => u.hostname === h || u.hostname.endsWith('.' + h)); } catch { return false; }
 };
 export const revisionOf = meta => JSON.stringify([meta.md5 || meta.sha256 || '', meta.modified || '', meta.size]);
-// Journal 31 stores derived evidence instead of every source reading. A parser
-// upgrade therefore needs one new preparation even when the Excel is unchanged.
-// Other roles retain their existing revision and do not redownload on this update.
-const instantRevisionPrefix = () => `instant:v${JOURNAL_ANALYSIS_VERSION}:`;
-const preparedRevisionOf = (meta, role) => (role === 'instant' ? instantRevisionPrefix() : '') + revisionOf(meta);
+// Journal packages store derived evidence. Upgrade each parser independently,
+// even when its Excel is unchanged, without invalidating other source roles.
+const journalRevisionPrefix = role => role === 'instant' ? `instant:v${JOURNAL_ANALYSIS_VERSION}:`
+  : role === 'events' ? `events:v${EVENTS_PACKAGE_VERSION}:` : null;
+const preparedRevisionOf = (meta, role) => (journalRevisionPrefix(role) || '') + revisionOf(meta);
 
 export function createPreparedService({ source, store, yandex }) {
   const pending = new Map(), pendingResponses = new Map(), metadataChecked = new Map(),active=new Map(),upgradeFailures=new Map();
@@ -203,10 +218,11 @@ export function createPreparedService({ source, store, yandex }) {
     if (!pendingResponses.has(key)) {
       const work = (async () => {
         let stale = false;
-        const meta = store.getMeta || role === 'instant' ? await readMeta(path, role) : null;
+        const parserPrefix = journalRevisionPrefix(role);
+        const meta = store.getMeta || parserPrefix ? await readMeta(path, role) : null;
         const checkedKey = `${role}:${path}`;
-        const parserChanged = role === 'instant' && meta && !String(meta.revision).startsWith(instantRevisionPrefix());
-        const upgradeKey = role === 'instant' ? JSON.stringify([path, role, instantRevisionPrefix(), policy?.globalGeneration, policy?.generation]) : null;
+        const parserChanged = parserPrefix && meta && !String(meta.revision).startsWith(parserPrefix);
+        const upgradeKey = parserPrefix ? JSON.stringify([path, role, parserPrefix, policy?.globalGeneration, policy?.generation]) : null;
         if (upgradeKey && !parserChanged) upgradeFailures.delete(upgradeKey);
         const failedAt = upgradeKey && upgradeFailures.get(upgradeKey);
         const upgradePaused = parserChanged && failedAt != null && Date.now() - failedAt < 60000;

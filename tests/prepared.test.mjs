@@ -8,7 +8,7 @@ import { buildIndex, search, listNotes, analysisRecords } from '../public/core.j
 import { createAnalysisService } from '../public/analysis-service.js';
 import { indexMonthly } from '../public/monthly.js';
 import { createPreparedService, preparationLimits, revisionOf } from '../prepared-service.mjs';
-import { JOURNAL_ANALYSIS_VERSION } from '../public/journals.js';
+import { JOURNAL_ANALYSIS_VERSION, EVENTS_PACKAGE_VERSION } from '../public/journals.js';
 import { createPreparedStore } from '../prepared-store.mjs';
 import { createServer } from '../server.mjs';
 
@@ -268,7 +268,7 @@ test('prepared API serves cached journals and validates blocks before any snapsh
   let blocked=false,reads=0,policyChecks=0;
   const preparedStore={
     assertLoadAllowed:async()=>{policyChecks++;if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
-    get:async(_,path,role)=>{reads++;return{revision:role==='instant'?`instant:v${JOURNAL_ANALYSIS_VERSION}:journal-test`:'journal-test',data:{format:1,role,rows:[]}};},
+    get:async(_,path,role)=>{reads++;return{revision:role==='instant'?`instant:v${JOURNAL_ANALYSIS_VERSION}:journal-test`:`events:v${EVENTS_PACKAGE_VERSION}:journal-test`,data:{format:1,role,rows:[]}};},
   };
   const server=createServer({env:{YANDEX_PUBLIC_URL:'https://disk.yandex.ru/d/CachedJournals'},preparedStore});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -370,4 +370,91 @@ test('failed journal 31 upgrade backs off for 60 seconds without caching adminis
   generation='1';
   assert.equal((await service.fromDatabase(path,'instant',etag)).stale,true);
   assert.equal(downloads,3);assert.equal(metadata,6,'a new policy generation cannot inherit an earlier failure backoff');
+});
+
+test('journal 46 aggregation upgrade prepares unchanged Excel once before ETag and leaves journal 31 cached',async t=>{
+  const source='https://disk.yandex.ru/d/EventAggregationUpgrade',path='/ЭС/РЭС/46. события.xlsx';
+  const rows=[
+    ['ТУ','Тип ПУ','Серийный','Абонент','Лимит','Дата и время','Тип','Событие','Инициатор','Дополнительная информация'],
+    ['','','0001','','','01.08.2026 12:00:00','','','','Вскрытый элемент устройства "Клеммная крышка"'],
+  ];
+  const workbook=excel(rows),meta={type:'file',name:'46. события.xlsx',size:workbook.length,modified:'2026-10-01',md5:'same-events-source'};
+  let saved={revision:revisionOf(meta),updated_at:new Date(),data:{format:1,analysisVersion:2,role:'events',rows:[['0001','2026-08-01T12:00:00',rows[1][9]]]}};
+  const instant={revision:`instant:v${JOURNAL_ANALYSIS_VERSION}:cached-source`,updated_at:new Date(),data:{format:1,role:'instant',fields:[],meters:[]}};
+  let downloads=0,writes=0,metadata=0,blocked=false,reads=0;
+  const original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(String(url).startsWith('https://downloader.disk.yandex.ru/')){downloads++;return new Response(workbook,{headers:{'content-length':String(workbook.length)}});}
+    return original(url,options);
+  });
+  const entry=role=>role==='instant'?instant:saved;
+  const store={
+    getMeta:async(_,file,role)=>{reads++;const value=entry(role);return{revision:value.revision,updated_at:value.updated_at};},
+    getRevision:async(_,file,role)=>{reads++;return entry(role).revision;},
+    get:async(_,file,role)=>{reads++;return entry(role);},
+    assertLoadAllowed:async()=>{if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
+    put:async(_,file,role,revision,data)=>{assert.equal(file,path);assert.equal(role,'events');writes++;saved={revision,data,updated_at:new Date()};},
+  };
+  const service=createPreparedService({source,store,yandex:async url=>{
+    metadata++;return Response.json(url.pathname.endsWith('/download')?{href:'https://downloader.disk.yandex.ru/event-upgrade'}:meta);
+  }});
+  const oldEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  const upgraded=await Promise.all(Array.from({length:5},(_,i)=>service.fromDatabase(path,'events',i%2?undefined:oldEtag)));
+  assert.equal(downloads,1);assert.equal(writes,1);assert.equal(metadata,2);
+  assert.ok(upgraded.every(item=>!item.unchanged&&!item.stale&&item.revision===`events:v${EVENTS_PACKAGE_VERSION}:`+revisionOf(meta)));
+  const pack=JSON.parse(gunzipSync(upgraded[0].payload));
+  assert.equal(pack.format,1);assert.equal(pack.role,'events');assert.equal(pack.aggregationVersion,EVENTS_PACKAGE_VERSION);
+  const currentEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  const unchanged=await service.fromDatabase(path,'events',currentEtag);
+  assert.equal(unchanged.unchanged,true);assert.equal(unchanged.stale,false);
+  const instantUnchanged=await service.fromDatabase('/ЭС/РЭС/31. значения.xlsx','instant',`"${Buffer.from(instant.revision).toString('base64url')}"`);
+  assert.equal(instantUnchanged.unchanged,true);assert.equal(instantUnchanged.revision,instant.revision);
+  assert.equal(downloads,1);assert.equal(writes,1);assert.equal(metadata,2,'neither the new events package nor the existing instant parser should reload');
+  blocked=true;const beforeReads=reads;
+  await assert.rejects(service.fromDatabase(path,'events',oldEtag),error=>error.code==='res_blocked');
+  assert.equal(reads,beforeReads);assert.equal(downloads,1);assert.equal(metadata,2);
+});
+
+test('failed journal 46 migration backs off, preserves the offline copy, then recovers to one cached aggregation',async t=>{
+  const path='/ЭС/РЭС/46. события.xlsx',bad=excel([['Нет шапки журнала'],['Учебная строка']]);
+  const good=excel([
+    ['ТУ','Тип ПУ','Серийный','Абонент','Лимит','Дата и время','Тип','Событие','Инициатор','Дополнительная информация'],
+    ['','','0001','','','01.08.2026 12:00:00','','','','Вскрытый элемент устройства "Корпус"'],
+  ]);
+  const legacy={format:1,analysisVersion:2,role:'events',rows:[['0001','2026-08-01T12:00:00','Вскрытый элемент устройства "Корпус"']]};
+  let saved={revision:'legacy-events',updated_at:new Date(),data:legacy};
+  let workbook=bad,downloads=0,metadata=0,writes=0,blocked=false,clock=Date.now();
+  t.mock.method(Date,'now',()=>clock);
+  const original=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(String(url).startsWith('https://downloader.disk.yandex.ru/')){downloads++;return new Response(workbook,{headers:{'content-length':String(workbook.length)}});}
+    return original(url,options);
+  });
+  const store={getMeta:async()=>({revision:saved.revision,updated_at:saved.updated_at}),getRevision:async()=>saved.revision,get:async()=>saved,
+    assertLoadAllowed:async()=>{if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
+    put:async(_,file,role,revision,data)=>{assert.equal(file,path);assert.equal(role,'events');writes++;saved={revision,data,updated_at:new Date()};}};
+  const service=createPreparedService({source:'https://disk.yandex.ru/d/EventMigrationBackoff',store,yandex:async url=>{
+    metadata++;return Response.json(url.pathname.endsWith('/download')?{href:'https://downloader.disk.yandex.ru/event-recovery'}:
+      {type:'file',name:'46. события.xlsx',size:workbook.length,modified:'2026-10-01'});
+  }});
+  const oldEtag=`"${Buffer.from(saved.revision).toString('base64url')}"`;
+  for(let i=0;i<2;i++){
+    const stale=await service.fromDatabase(path,'events',oldEtag);
+    assert.equal(stale.unchanged,true);assert.equal(stale.stale,true);assert.equal(stale.revision,'legacy-events');
+  }
+  assert.equal(downloads,1);assert.equal(metadata,2);assert.equal(writes,0);
+  const offline=await service.fromDatabase(path,'events');assert.equal(offline.stale,true);
+  assert.deepEqual(JSON.parse(gunzipSync(offline.payload)),legacy,'migration failure must leave the existing offline format readable');
+  assert.equal(downloads,1);assert.equal(metadata,2,'unconditional stale reads also respect the migration backoff');
+  blocked=true;
+  await assert.rejects(service.fromDatabase(path,'events',oldEtag),error=>error.code==='res_blocked');
+  assert.equal(downloads,1);assert.equal(metadata,2);
+  blocked=false;workbook=good;clock+=60001;
+  const recovered=await service.fromDatabase(path,'events',oldEtag);
+  assert.equal(recovered.unchanged,undefined);assert.equal(recovered.stale,false);assert.equal(writes,1);
+  assert.equal(JSON.parse(gunzipSync(recovered.payload)).aggregationVersion,EVENTS_PACKAGE_VERSION);
+  assert.equal(downloads,2);assert.equal(metadata,4);
+  const unchanged=await service.fromDatabase(path,'events',`"${Buffer.from(saved.revision).toString('base64url')}"`);
+  assert.equal(unchanged.unchanged,true);assert.equal(unchanged.stale,false);
+  assert.equal(downloads,2);assert.equal(metadata,4,'successful migration clears the failure state and caches the new revision');
 });

@@ -1,6 +1,6 @@
 import { idKey } from './core.js';
 import { pointKey, samePoint } from './monthly.js';
-import { serialKey, eventKinds } from './journals.js';
+import { serialKey, normalizeEventPack, eventClassification } from './journals.js';
 import { createJournalCorrelation } from './journal-correlation.js';
 
 const monthKey = ({ y, m }) => `${y}-${String(m + 1).padStart(2, '0')}`;
@@ -9,6 +9,7 @@ const maxDate = values => values.filter(Boolean).sort().at(-1) || null;
 const dated = value => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(String(value || ''));
 const pointId = (account, point) => JSON.stringify([account, point]);
 const informational = signal => signal.informational === true || /UNBALANCE|ASYMMETRY|НЕСИММЕТР/i.test(`${signal.code} ${signal.title}`);
+const registrations = event => Number.isFinite(event.count) && event.count > 0 ? event.count : 1;
 
 // An instantaneous reading cannot estimate energy. Correlation only reports
 // temporal coincidence against three immediately preceding complete months.
@@ -36,7 +37,7 @@ export function correlateJournalMonths(months, values, markers, now = new Date()
 }
 
 export function createJournalAnalysis(model, records, journals = {}) {
-  const instant = journals.instant || null, events = journals.events || null;
+  const instant = journals.instant || null, events = journals.events ? normalizeEventPack(journals.events) : null;
   if (!instant && !events) return null;
   const identities = new Map(), bindings = new Map(), points = new Map(), reasons = new Map();
   for (const record of records) {
@@ -67,14 +68,20 @@ export function createJournalAnalysis(model, records, journals = {}) {
   for (const meter of instant?.meters || []) {
     const key = serialKey(meter.serial); if (key) instantBySerial.set(key, meter);
   }
-  let eventRows = 0;
-  for (const row of events?.rows || []) {
-    if (!Array.isArray(row)) continue;
-    const [serial, at, description] = row, key = serialKey(serial);
-    if (!key || !dated(at)) continue;
-    eventRows++;
-    const classifications = eventKinds(description), kind = classifications[0];
-    const item = { serial: String(serial), at, description: String(description || ''), kind: kind?.kind || null, title: kind?.title || 'Событие журнала 46', code: kind?.code || null, recommendation: kind?.recommendation || '', classifications };
+  let eventRows = 0, eventGroups = 0, eventFirst = null, eventLast = null;
+  for (const group of events?.groups || []) {
+    const key = serialKey(group.serial);
+    if (!key || !dated(group.first) || !dated(group.last)) continue;
+    const classifications = (group.codes || []).map(eventClassification).filter(Boolean), kind = classifications[0];
+    const examples = group.examples || [], description = examples.length === 1 ? examples[0].description : examples.map(example => `${example.at}: ${example.description}`).join('\n');
+    const item = { ...group, serial: String(group.serial), at: group.first, description,
+      groupId: JSON.stringify([key, group.month, group.codes || []]), aggregationVersion: 1,
+      timestampDetailExact: examples.some(example => example.at === group.first),
+      kind: kind?.kind || null, title: classifications.length ? classifications.map(c => c.title).join('; ') : 'Событие журнала 46', code: kind?.code || null,
+      recommendation: kind?.recommendation || '', classifications };
+    eventRows += registrations(item); eventGroups++;
+    if (!eventFirst || item.first < eventFirst) eventFirst = item.first;
+    if (!eventLast || item.last > eventLast) eventLast = item.last;
     if (!eventsBySerial.has(key)) eventsBySerial.set(key, []);
     eventsBySerial.get(key).push(item);
   }
@@ -84,13 +91,19 @@ export function createJournalAnalysis(model, records, journals = {}) {
   const matchedCounts = Object.fromEntries(['instant', 'events'].map(role => [role, sourceKeys[role].filter(key => bindings.has(key)).length]));
   const sourcePeriod = {
     instant: [minDate((instant?.meters || []).map(m => m.first)), maxDate((instant?.meters || []).map(m => m.last))],
-    events: [minDate([...eventsBySerial.values()].map(list => list[0]?.at)), maxDate([...eventsBySerial.values()].map(list => list.at(-1)?.at))],
+    events: [eventFirst, eventLast],
   };
+  const eventCountsBySerial = new Map([...eventsBySerial].map(([key, groups]) => [key, groups.reduce((sum, group) => sum + registrations(group), 0)]));
+  const matchedEventRows = sourceKeys.events.reduce((sum, key) => sum + (bindings.has(key) ? eventCountsBySerial.get(key) : 0), 0);
+  const matchedEventGroups = sourceKeys.events.reduce((sum, key) => sum + (bindings.has(key) ? eventsBySerial.get(key).length : 0), 0);
   function coverage(scope = null) {
     const source = (role, data) => ({ loaded: !!data, totalMeters: sourceKeys[role].length,
       matchedMeters: scope ? [...scope].filter(k => bindings.has(k) && sourceMaps[role].has(k)).length : matchedCounts[role],
       first: sourcePeriod[role][0], last: sourcePeriod[role][1], warnings: [...(data?.warnings || []), ...(role === 'instant' && data && (data.analysisVersion || 1) < 2
-        ? ['Сохранён журнал 31 предыдущей версии: новые электрические проверки и точные описания крайних измерений могут быть недоступны. Обновите журнал при доступе к сети.'] : [])], ...(role === 'instant' ? { reportPeriod: data?.reportPeriod || null, coefficientMode: data?.coefficientMode || 'unknown' } : {}) });
+        ? ['Сохранён журнал 31 предыдущей версии: новые электрические проверки и точные описания крайних измерений могут быть недоступны. Обновите журнал при доступе к сети.'] : [])], ...(role === 'instant' ? { reportPeriod: data?.reportPeriod || null, coefficientMode: data?.coefficientMode || 'unknown' }
+        : { totalRegistrations: eventRows, totalGroups: eventGroups,
+          matchedRegistrations: scope ? [...scope].reduce((sum, key) => sum + (bindings.has(key) ? eventCountsBySerial.get(key) || 0 : 0), 0) : matchedEventRows,
+          matchedGroups: scope ? [...scope].reduce((sum, key) => sum + (bindings.has(key) ? eventsBySerial.get(key)?.length || 0 : 0), 0) : matchedEventGroups }) });
     return { instant: source('instant', instant), events: source('events', events), monthlyFirst: model.months.length ? monthKey(model.months[0]) : null, monthlyLast: model.months.length ? monthKey(model.months.at(-1)) : null };
   }
   const unmatched = {};
@@ -100,7 +113,8 @@ export function createJournalAnalysis(model, records, journals = {}) {
       const reason = reasons.get(key) || 'Серийный номер отсутствует в реестре.';
       grouped.set(reason, (grouped.get(reason) || 0) + 1);
     }
-    unmatched[role] = { meters: keys.length, rows: role === 'events' ? keys.reduce((sum, k) => sum + eventsBySerial.get(k).length, 0) : keys.reduce((sum, k) => sum + (instantBySerial.get(k).samples || 0), 0), reasons: [...grouped].map(([reason, meters]) => ({ reason, meters })) };
+    unmatched[role] = { meters: keys.length, rows: role === 'events' ? keys.reduce((sum, k) => sum + eventCountsBySerial.get(k), 0) : keys.reduce((sum, k) => sum + (instantBySerial.get(k).samples || 0), 0),
+      ...(role === 'events' ? { groups: keys.reduce((sum, k) => sum + eventsBySerial.get(k).length, 0) } : {}), reasons: [...grouped].map(([reason, meters]) => ({ reason, meters })) };
   }
   function serialsForRows(rows) {
     return new Set(rows.flatMap(row => [...(points.get(pointId(row.accountKey, pointKey(row))) || [])]));
@@ -145,9 +159,9 @@ export function createJournalAnalysis(model, records, journals = {}) {
         }
       }
       for (const [code, entries] of byKind) {
-        const first = entries[0], last = entries.at(-1);
-        flags.push({ code: String(code).startsWith('J46_') ? code : `J46_${code}`, serial: first.serial, title: first.title, source: 'events', supportingEvidence: true, pts: 10, weak: true, first: first.at, last: last.at, count: entries.length,
-          detail: `ПУ ${first.serial}: ${entries.length} событий. Первое: ${first.at}; последнее: ${last.at}. ${first.description}`,
+        const first = entries[0], last = maxDate(entries.map(entry => entry.last)), count = entries.reduce((sum, entry) => sum + registrations(entry), 0);
+        flags.push({ code: String(code).startsWith('J46_') ? code : `J46_${code}`, serial: first.serial, title: first.title, source: 'events', supportingEvidence: true, pts: 10, weak: true, first: first.at, last, count, groupCount: entries.length,
+          detail: `ПУ ${first.serial}: ${count} регистраций журнала 46 в ${entries.length} месячных группах. Первая: ${first.at}; последняя: ${last}. Повторные регистрации не считаются независимыми вскрытиями. Примеры описаний с их фактическими датами: ${first.description}`,
           recommendation: first.recommendation || 'Сверить событие с актами работ и проверить состояние ПУ и пломб.' });
       }
       cases.push(...correlation.casesForSerial(key));
@@ -180,10 +194,14 @@ export function createJournalAnalysis(model, records, journals = {}) {
     const inPeriod = event => event.at.slice(0, 7) >= firstMonth && event.at.slice(0, 7) <= lastMonth;
     const display = truncated ? [...matchedEvents.filter(inPeriod), ...matchedEvents.filter(e => !inPeriod(e))].slice(0, 500).sort((a,b) => a.at.localeCompare(b.at)) : matchedEvents;
     const sortedCases = [...cases].sort((a, b) => (a.priority === 'high' ? 0 : 1) - (b.priority === 'high' ? 0 : 1) || b.score - a.score || String(a.month).localeCompare(String(b.month)));
-    result.journal = { events: display, eventCount: matchedEvents.length, displayTruncated: truncated, flags, latestMetrics, latestMetricCount, latestMetricsTruncated: latestMetricCount > latestMetrics.length, coverage: coverage(serials), unmatched,
+    const groupedEvents = matchedEvents.filter(e => e.aggregationVersion === 1), electricalMarkerCount = matchedEvents.length - groupedEvents.length;
+    const eventRegistrationCount = groupedEvents.reduce((sum, e) => sum + registrations(e), 0), recognizedRegistrationCount = groupedEvents.reduce((sum, e) => sum + (e.kind ? registrations(e) : 0), 0);
+    result.journal = { events: display, eventCount: eventRegistrationCount + electricalMarkerCount, eventRegistrationCount, eventGroupCount: groupedEvents.length,
+      recognizedRegistrationCount, electricalMarkerCount, displayEntryCount: matchedEvents.length, displayTruncated: truncated, flags, latestMetrics, latestMetricCount, latestMetricsTruncated: latestMetricCount > latestMetrics.length, coverage: coverage(serials), unmatched,
       cases: sortedCases.slice(0, 20), caseCount: cases.length, caseMonthCount: cases.reduce((count, item) => count + item.months.filter(month => month.month).length, 0), casesTruncated: cases.length > 20,
       caseCounts: Object.fromEntries(Object.keys(titles).map(scenario => [scenario, cases.filter(item => item.scenario === scenario).length])),
-      outsidePeriod: matchedEvents.filter(e => !inPeriod(e)).length, recognizedEvents: matchedEvents.filter(e => e.kind).length };
+      outsidePeriod: matchedEvents.reduce((sum, e) => sum + (!inPeriod(e) ? registrations(e) : 0), 0),
+      outsidePeriodRegistrations: groupedEvents.reduce((sum, e) => sum + (!inPeriod(e) ? registrations(e) : 0), 0), recognizedEvents: recognizedRegistrationCount + electricalMarkerCount };
     return result;
   }
   function reportEvents() {
@@ -205,5 +223,5 @@ export function createJournalAnalysis(model, records, journals = {}) {
     }
     return out;
   }
-  return { supplement, coverage, unmatched, reportEvents, reportMetrics, reportCases: correlation.reportCases, serialsForRows, stats: { eventRows, correlation: correlation.stats } };
+  return { supplement, coverage, unmatched, reportEvents, reportMetrics, reportCases: correlation.reportCases, serialsForRows, stats: { eventRows, eventGroups, correlation: correlation.stats } };
 }

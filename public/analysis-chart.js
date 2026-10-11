@@ -5,6 +5,13 @@ const EVENT_KINDS = { intrusion: 'Вскрытие / пломбы', magnetic: '�
 const MAX_MONTH_EVENTS = 50;
 const MAX_MONTH_CASES = 8;
 const CASE_TITLES = { combined:'Параметры 31 + события 46 + снижение', electrical_drop:'Электрические признаки + снижение', event_drop:'События 46 + снижение', journals_only:'Признаки журналов 31 и 46 по одному ПУ', load_zero:'Нагрузка ПУ при нулевом ПО собственной ТУ' };
+const isMonthlyEvent = event => event.kind !== 'electrical' && /^\d{4}-(0[1-9]|1[0-2])$/.test(String(event.month || '')) && !!event.first && !!event.last;
+const registrationCount = event => isMonthlyEvent(event) && Number.isFinite(event.count) && event.count > 0 ? event.count : 1;
+const monthlyEventLabel = event => `${monthLabel(event.month)} · ПУ ${event.serial}: ${event.title || EVENT_KINDS[event.kind] || 'Журнал 46'}, регистраций ${registrationCount(event)}. Первая регистрация ${eventDate(event.first)}; последняя ${eventDate(event.last)}.`;
+function monthlyEventHTML(event) {
+  const examples = (event.examples || []).slice(0,3);
+  return `<p class="event-registration-count">Журнал 46 · ${escape(monthLabel(event.month))} · регистраций: <strong>${escape(registrationCount(event))}</strong>${Array.isArray(event.days) ? ` · дней с регистрациями: ${event.days.length}` : ''}.</p><p class="event-registration-range">Первая регистрация: ${escape(eventDate(event.first))}.<br>Последняя регистрация: ${escape(eventDate(event.last))}.</p><p class="event-registration-note">Число записей журнала не равно числу независимых вскрытий. Промежуток между крайними датами не означает непрерывную тревогу.</p>${examples.length ? `<div class="event-examples"><span>Фактические примеры записей</span>${examples.map(example=>`<div><time>${escape(eventDate(example.at))}</time><p>${escape(example.description)}</p></div>`).join('')}</div>` : `<p>${escape(event.description || 'Описание группы отсутствует.')}</p>`}${event.examplesTruncated ? '<p class="event-registration-note">Сохранено до 3 примеров. Месячная сводка — в Excel-отчёте; все исходные записи — в журнале 46.</p>' : ''}`;
+}
 export const journalCaseTitle = item => item.temporalRelation === 'pre_existing' ? 'Журнальные признаки на фоне прежнего снижения' : CASE_TITLES[item.scenario] || 'Совокупность признаков';
 const monthLabel = month => {
   const parts = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(month || ''));
@@ -39,10 +46,13 @@ function comparisonHTML(comparisons = {}, thresholdMatches = []) {
 }
 function evidenceHTML(evidence = {}, compact = false) {
   const electrical = evidence.electrical || [], events = evidence.events || [], limit = compact ? 2 : 4;
-  const electricalDates = evidence.electricalTimestampCount ?? electrical.length, eventCount = evidence.eventCount ?? events.length;
+  const electricalDates = evidence.electricalTimestampCount ?? electrical.length;
+  const monthlyRegistrations = evidence.eventRegistrationCountScope === 'participating_month_groups';
+  const eventDates = evidence.eventTimestampCount ?? (monthlyRegistrations ? events.length : evidence.eventCount ?? events.length);
   const electricalHTML = electrical.slice(0,limit).map(record=>`<li><div><strong>${escape(record.title || record.code || 'Электрический признак')}</strong><time>${record.at ? escape(eventDate(record.at)) : 'Дата измерения не указана'}</time></div><p>${escape(record.detail || 'Подробности измерения отсутствуют.')}</p>${record.timestampDetailExact === false ? '<small>Описание агрегировано по нескольким измерениям; дата не устанавливает время каждого значения.</small>' : ''}${record.conditional ? '<small>Признак зависит от схемы учёта и условий измерения.</small>' : ''}${record.count != null ? `<small>Наблюдений: ${escape(record.count)}</small>` : ''}</li>`).join('');
-  const eventsHTML = events.slice(0,limit).map(record=>`<li><div><strong>${escape((record.classifications || []).map(item=>item.title).filter(Boolean).join(' / ') || 'Событие ПУ')}</strong><time>${record.at ? escape(eventDate(record.at)) : 'Дата события не указана'}</time></div><p>${escape(record.description || 'Описание события отсутствует.')}</p></li>`).join('');
-  return `<div class="case-evidence">${electrical.length ? `<section><h5>Журнал 31 · измерения</h5>${evidence.electricalCount != null ? `<p class="case-evidence-count">Наблюдений: ${escape(evidence.electricalCount)}.</p>` : ''}<ul>${electricalHTML}</ul>${electricalDates>Math.min(limit,electrical.length) || evidence.electricalDetailsTruncated ? `<p class="case-limit">Показано ${Math.min(limit,electrical.length)} из ${escape(electricalDates)} сохранённых записей с датами. Сводка — в Excel-отчёте; полные измерения — в исходном журнале 31.</p>` : ''}</section>` : ''}${events.length ? `<section><h5>Журнал 46 · события</h5><ul>${eventsHTML}</ul>${eventCount>Math.min(limit,events.length) || evidence.eventDetailsTruncated ? `<p class="case-limit">Показано ${Math.min(limit,events.length)} из ${escape(eventCount)} событий. Полный перечень — в Excel-отчёте.</p>` : ''}</section>` : ''}</div>`;
+  const eventsHTML = events.slice(0,limit).map(record=>`<li><div><strong>${escape((record.classifications || []).map(item=>item.title).filter(Boolean).join(' / ') || 'Регистрация журнала 46')}</strong><time>${record.at ? escape(eventDate(record.at)) : 'Дата регистрации не указана'}</time></div><p>${escape(record.description || 'Описание регистрации отсутствует.')}</p>${record.timestampDetailExact === false ? '<small>Описание обобщено по месячной группе; этот текст не привязан к конкретной регистрации.</small>' : ''}</li>`).join('');
+  const eventCountsHTML = !monthlyRegistrations ? '' : `<p class="case-evidence-count">Участвующих месячных групп: ${escape(evidence.eventGroupCount ?? 0)} · регистраций в них: ${escape(evidence.eventCount ?? 0)}.</p><p class="event-registration-note">Полное число записей этих групп за месяц, а не число независимых вскрытий. Оно не ограничено точным временным окном измерений журнала 31.</p>`;
+  return `<div class="case-evidence">${electrical.length ? `<section><h5>Журнал 31 · измерения</h5>${evidence.electricalCount != null ? `<p class="case-evidence-count">Наблюдений: ${escape(evidence.electricalCount)}.</p>` : ''}<ul>${electricalHTML}</ul>${electricalDates>Math.min(limit,electrical.length) || evidence.electricalDetailsTruncated ? `<p class="case-limit">Показано ${Math.min(limit,electrical.length)} из ${escape(electricalDates)} сохранённых записей с датами. Сводка — в Excel-отчёте; полные измерения — в исходном журнале 31.</p>` : ''}</section>` : ''}${events.length ? `<section><h5>Журнал 46 · регистрации</h5>${eventCountsHTML}<ul>${eventsHTML}</ul>${eventDates>Math.min(limit,events.length) || evidence.eventDetailsTruncated ? `<p class="case-limit">Показано ${Math.min(limit,events.length)} из ${escape(eventDates)} сохранённых фактических дат регистраций. Месячные группы — в Excel-отчёте; все исходные записи — в журнале 46.</p>` : ''}</section>` : ''}</div>`;
 }
 export function journalCaseDetailHTML(item, entry = item, compact = false) {
   const temporal = entry.temporalRelation || item.temporalRelation;
@@ -59,22 +69,24 @@ export function journalCaseDetailHTML(item, entry = item, compact = false) {
 // either edge of the consumption period, or merge January from different years.
 export function indexChartEvents(months, events = []) {
   const slots = new Map(months.map(({ y, m }, i) => [`${y}-${String(m + 1).padStart(2, '0')}`, i]));
-  const byMonth = new Map(); let outsidePeriod = 0;
+  const byMonth = new Map(); let outsidePeriod = 0, outsideGroups = 0;
   for (const event of events) {
     if (!event) continue;
     const kind = event.kind === 'opening' ? 'intrusion' : event.kind;
     if (!Object.hasOwn(EVENT_KINDS, kind)) continue;
-    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(String(event.at || ''));
+    const monthly = isMonthlyEvent(event), at = monthly ? event.first : event.at;
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(String(at || ''));
     if (!match) continue;
     const [, year, month, day] = match, date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
     if (date.getUTCFullYear() !== Number(year) || date.getUTCMonth() !== Number(month) - 1 || date.getUTCDate() !== Number(day)) continue;
+    if (monthly && event.month !== `${year}-${month}`) continue;
     const i = slots.get(`${year}-${month}`);
-    if (i === undefined) { outsidePeriod++; continue; }
+    if (i === undefined) { outsidePeriod += registrationCount(event); if (monthly) outsideGroups++; continue; }
     if (!byMonth.has(i)) byMonth.set(i, []);
-    byMonth.get(i).push({ ...event, kind });
+    byMonth.get(i).push({ ...event, at, kind });
   }
   for (const list of byMonth.values()) list.sort((a, b) => String(a.at).localeCompare(String(b.at)) || String(a.serial).localeCompare(String(b.serial)));
-  return { byMonth, outsidePeriod };
+  return { byMonth, outsidePeriod, outsideGroups };
 }
 const eventDate = at => String(at || '').replace(/^(\d{4})-(\d{2})-(\d{2})T?/, '$3.$2.$1 ').trim();
 export function mountChart(host, { months, values, group = null, baseline = null, shift = null, title = 'Потребление', scenario = null, events = [], cases = [] }) {
@@ -85,7 +97,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
   let start = 0, end = months.length - 1, selected = end, smoothing = 0;
   const controls = `<div class="chart-controls"><button type="button" data-zoom="in" aria-label="Сузить период">＋</button><button type="button" data-zoom="out" aria-label="Расширить период">−</button><button type="button" data-zoom="left" aria-label="Предыдущий период">←</button><button type="button" data-zoom="right" aria-label="Следующий период">→</button><button type="button" data-zoom="all">Весь период</button></div>`;
   host.innerHTML = `<div class="chart-title"><h3>${escape(title)}</h3><span>кВт·ч</span></div><div class="chart-mode" role="group" aria-label="Вид графика"><button type="button" data-chart-mode="timeline" aria-pressed="true">Весь период</button><button type="button" data-chart-mode="yearly" aria-pressed="false">По годам</button></div><div class="chart-legend timeline-legend"><span class="legend-fact">Полезный отпуск</span>${group ? '<span class="legend-group">Медиана группы</span>' : ''}${baseline != null ? '<span class="legend-base">Базовый уровень</span>' : ''}${shift != null ? '<span class="legend-shift">Изменение профиля</span>' : ''}${scenario ? '<span class="legend-scenario">Сценарий</span>' : ''}</div><div class="chart-legend year-legend" hidden></div><div class="plot" data-no-swipe></div>${controls}<div class="chart-settings"><label>Сглаживание<select data-smoothing><option value="0">Без сглаживания</option><option value="3">3 месяца</option><option value="6">6 месяцев</option></select></label><span class="chart-window"></span></div><label class="chart-scrubber"><span class="sr-only">Месяц на графике</span><input class="month-scrubber" type="range" min="0" max="${end}" value="${end}" step="1"></label><div class="chart-reading" aria-live="polite"></div><p class="chart-note">Нажмите на график, чтобы увидеть месяц. Пропуски — нет полных данных; точки у нуля — ≤ 3 кВт·ч. Сглаживание и масштаб меняют только график.</p>`;
-  host.querySelector('.chart-reading').insertAdjacentHTML('afterend', `<div class="chart-event-legend" ${hasEvents ? '' : 'hidden'} aria-label="Обозначения событий">${Object.entries(EVENT_KINDS).filter(([kind]) => [...journal.byMonth.values()].some(list => list.some(event => event.kind === kind))).map(([kind, label]) => `<span data-event-kind="${kind}">${label}</span>`).join('')}</div><section class="chart-event-details" aria-live="polite" hidden></section>${journal.outsidePeriod ? `<p class="chart-event-outside">Событий вне периода потребления: ${journal.outsidePeriod}. Даты сохранены в журнале; на этот график они не переносятся.</p>` : ''}`);
+  host.querySelector('.chart-reading').insertAdjacentHTML('afterend', `<div class="chart-event-legend" ${hasEvents ? '' : 'hidden'} aria-label="Обозначения событий">${Object.entries(EVENT_KINDS).filter(([kind]) => [...journal.byMonth.values()].some(list => list.some(event => event.kind === kind))).map(([kind, label]) => `<span data-event-kind="${kind}">${label}</span>`).join('')}${[...journal.byMonth.values()].some(list=>list.some(isMonthlyEvent)) ? '<small>Одна метка 46 — одна месячная группа ПУ и категорий; число у метки — регистрации журнала.</small>' : ''}</div><section class="chart-event-details" aria-live="polite" hidden></section>${journal.outsidePeriod ? `<p class="chart-event-outside">Записей журналов вне периода потребления: ${journal.outsidePeriod}${journal.outsideGroups ? ` · месячных групп 46: ${journal.outsideGroups}` : ''}. На этот график они не переносятся.</p>` : ''}`);
   host.querySelector('.chart-event-legend').insertAdjacentHTML('afterend', `<div class="chart-case-legend" ${hasCases ? '' : 'hidden'}><span>Сопоставление журналов и ПО</span><small>Выделен календарный месяц сопоставления; месячные объёмы исходные.</small></div><section class="chart-case-details" aria-live="polite" hidden></section>`);
   const smooth = arr => !smoothing ? arr : arr.map((x, i) => {
     if (x == null) return null;
@@ -96,7 +108,9 @@ export function mountChart(host, { months, values, group = null, baseline = null
     const details = host.querySelector('.chart-event-details'), list = indices.flatMap(i => journal.byMonth.get(i) || []);
     details.hidden = !list.length;
     if (!list.length) { details.replaceChildren(); return; }
-    details.innerHTML = `<h4>События в выбранном месяце <span>${list.length}</span></h4><ul>${list.slice(0, MAX_MONTH_EVENTS).map(event => `<li data-event-kind="${event.kind}"><div><time>${escape(eventDate(event.at))}</time><span>ПУ ${escape(event.serial)}</span></div><strong>${escape(event.title || EVENT_KINDS[event.kind])}</strong><p>${escape(event.description)}</p></li>`).join('')}</ul>${list.length > MAX_MONTH_EVENTS ? `<p class="chart-event-limit">Показаны первые ${MAX_MONTH_EVENTS} из ${list.length} событий. ${list.some(event=>event.kind==='electrical') ? 'Сводка параметров 31 доступна в Excel-отчёте; полные измерения — в исходном журнале 31.' : 'Полный перечень доступен в Excel-отчёте по РЭС.'}</p>` : ''}`;
+    const monthly = list.filter(isMonthlyEvent), electrical = list.filter(event=>event.kind==='electrical');
+    const counts = monthly.length ? `<p class="chart-event-counts">На графике · журнал 46: ${monthly.length} месячных групп · ${monthly.reduce((sum,event)=>sum+registrationCount(event),0)} регистраций${electrical.length ? `; журнал 31: ${electrical.length} сохранённых отметок измерений` : ''}.</p>` : '';
+    details.innerHTML = `<h4>Журнальные отметки в выбранном месяце <span>${list.length}</span></h4>${counts}<ul>${list.slice(0, MAX_MONTH_EVENTS).map(event => `<li data-event-kind="${event.kind}"><div>${!isMonthlyEvent(event) ? `<time>${escape(eventDate(event.at))}</time>` : ''}<span>ПУ ${escape(event.serial)}</span></div><strong>${escape(event.title || EVENT_KINDS[event.kind])}</strong>${isMonthlyEvent(event) ? monthlyEventHTML(event) : `<p>${escape(event.description)}</p>`}</li>`).join('')}</ul>${list.length > MAX_MONTH_EVENTS ? `<p class="chart-event-limit">Показаны первые ${MAX_MONTH_EVENTS} из ${list.length} журнальных отметок. Месячные группы 46 и сводка параметров 31 доступны в Excel-отчёте; все исходные регистрации и измерения — в соответствующих журналах.</p>` : ''}`;
   }
   function caseDetails(indices) {
     const details = host.querySelector('.chart-case-details'), list = indices.flatMap(i=>joint.byMonth.get(i) || []);
@@ -111,12 +125,15 @@ export function mountChart(host, { months, values, group = null, baseline = null
   }
   function markers(i, x, y, yearly = false) {
     const list = journal.byMonth.get(i); if (!list?.length) return '';
-    const kinds = Object.keys(EVENT_KINDS).filter(kind => list.some(event => event.kind === kind));
-    return kinds.map((kind, k) => {
-      const count = list.filter(event => event.kind === kind).length, cx = x + (k - (kinds.length - 1) / 2) * 15;
-      const label = `${ymLabel(months[i])}: ${EVENT_KINDS[kind]}, событий ${count}`;
+    const monthly = list.filter(isMonthlyEvent), legacy = list.filter(event=>!isMonthlyEvent(event));
+    const items = [...monthly.map(event=>({kind:event.kind,count:registrationCount(event),event})),...Object.keys(EVENT_KINDS).filter(kind=>legacy.some(event=>event.kind===kind)).map(kind=>({kind,count:legacy.filter(event=>event.kind===kind).length}))];
+    return items.map(({kind,count,event}, k) => {
+      const width=Math.min(60,(items.length-1)*15), plotWidth=Math.max(280,host.querySelector('.plot').clientWidth || host.clientWidth || 360);
+      const cx = monthly.length ? Math.max(56,Math.min(plotWidth-24,x+(items.length>1 ? (k/(items.length-1)-.5)*width : 0))) : x+(k-(items.length-1)/2)*15;
+      const label = event ? monthlyEventLabel(event) : `${ymLabel(months[i])}: ${EVENT_KINDS[kind]}, ${kind==='electrical' ? 'отметок измерений' : 'записей'} ${count}`;
+      const examples = event ? (event.examples || []).slice(0,3).map(example=>`${eventDate(example.at)}: ${String(example.description || '').slice(0,140)}`).join('; ') : '';
       const shape = kind === 'intrusion' ? `<path d="M${cx},${y-5}l5,9h-10Z"/>` : kind === 'magnetic' ? `<circle cx="${cx}" cy="${y}" r="4.5"/>` : `<rect x="${cx-4}" y="${y-4}" width="8" height="8" rx="1"/>`;
-      return `<g class="plot-event" data-event-kind="${kind}" ${yearly ? `data-calendar-month="${months[i].m}" data-event-year="${months[i].y}"` : `data-month="${i}"`} tabindex="0" role="button" aria-label="${escape(label)}"><title>${escape(label)}</title><rect class="plot-event-target" x="${cx-9}" y="${y-10}" width="18" height="20"/>${shape}${count > 1 ? `<text x="${cx}" y="${y+17}">${count}</text>` : ''}</g>`;
+      return `<g class="plot-event" data-event-kind="${kind}" ${event ? 'data-monthly-group="true"' : ''} ${yearly ? `data-calendar-month="${months[i].m}" data-event-year="${months[i].y}"` : `data-month="${i}"`} tabindex="0" role="button" aria-label="${escape(label)}"><title>${escape(label)}${examples ? ` Фактические примеры: ${escape(examples)}` : ''}</title><rect class="plot-event-target" x="${cx-9}" y="${y-10}" width="18" height="20"/>${shape}${count > 1 ? `<text x="${cx}" y="${y+17}">${event && count>999 ? '999+' : count}</text>` : ''}</g>`;
     }).join('');
   }
   function reading() {

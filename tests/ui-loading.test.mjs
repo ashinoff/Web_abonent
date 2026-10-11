@@ -84,7 +84,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
             this.journals ||= {}; this.journals[payload.role] = pack;
             if (this.monthlyModel) this.analysis = createAnalysisService(this.monthlyModel,this.monthlyRecords,this.journals);
             journalLoads.push({ role:payload.role,offlineOnly:payload.offlineOnly });
-            result = { role:payload.role,stats:pack.stats,warnings:pack.warnings,meterCount:pack.meters?.length ?? new Set(pack.rows.map(row => row[0])).size,...info };
+            result = { role:payload.role,stats:pack.stats,warnings:pack.warnings,meterCount:pack.meters?.length ?? pack.stats?.meters ?? new Set(pack.groups?.map(group => group.serial) || pack.rows?.map(row => row[0])).size,...info };
           } else result = { sheets:pack.sheets,...info };
         } else if (action === 'clearAnalysisJournal') {
           this.journals ||= {}; this.journals[payload.role] = null;

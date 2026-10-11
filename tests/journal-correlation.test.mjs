@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { indexMonthly, pointKey } from '../public/monthly.js';
 import { createAnalysisService } from '../public/analysis-service.js';
 import { createJournalAnalysis } from '../public/journal-analysis.js';
-import { createJournalCorrelation, indexPointComparisons, electricalObservations } from '../public/journal-correlation.js';
+import { createJournalCorrelation, indexPointComparisons, electricalObservations, eventEndpoints } from '../public/journal-correlation.js';
 
 const now = new Date('2026-10-11T07:00:00Z');
 const months = Array.from({ length: 21 }, (_, i) => ({ y: 2025 + Math.floor(i / 12), m: i % 12 }));
@@ -92,6 +92,46 @@ test('31-day actual timestamp matching accepts the boundary and rejects the next
   assert.ok(direct({ meters, events: [event('2026-06-01T12:00:00')] }).cases.some(item => item.scenario === 'combined'));
   const far = direct({ meters, events: [event('2026-06-02T12:00:00')] }).cases;
   assert.ok(!far.some(item => item.scenario === 'combined')); assert.ok(far.some(item => item.scenario === 'electrical_drop')); assert.ok(far.some(item => item.scenario === 'event_drop'));
+});
+
+test('monthly recurring groups match only actual active-day endpoints at the exact 31-day boundary', () => {
+  const compact = (last = '2026-05-01T12:00:00') => ({ ...event('2026-05-01T00:00:00'), aggregationVersion: 1, groupId: 'monthly-one', month: '2026-05', count: 20000,
+    first: '2026-05-01T00:00:00', last, codes: ['J46_TERMINAL_COVER'], days: [[1, '2026-05-01T00:00:00', last, 20000]], examples: [{ at: '2026-05-01T00:00:00', description }], examplesTruncated: true });
+  const meters = [sample([signal('2026-06-01T12:00:00')])];
+  const exact = direct({ meters, events: [compact()] }).cases.find(item => item.scenario === 'combined'); assert.ok(exact);
+  assert.equal(exact.evidence.eventCount, 20000); assert.equal(exact.evidence.eventGroupCount, 1); assert.equal(exact.evidence.eventTimestampCount, 1);
+  assert.equal(exact.evidence.events[0].at, '2026-05-01T12:00:00'); assert.equal(exact.evidence.events[0].timestampDetailExact, false);
+  assert.match(exact.evidence.events[0].description, /именно этой регистрации не сохранено/);
+  assert.ok(!direct({ meters, events: [compact('2026-05-01T11:59:59')] }).cases.some(item => item.scenario === 'combined'));
+  const endpoints = eventEndpoints([compact()]); assert.deepEqual(endpoints.map(item => item.at), ['2026-05-01T00:00:00', '2026-05-01T12:00:00']);
+  assert.equal(endpoints[0].timestampDetailExact, true); assert.equal(endpoints[0].description, description);
+});
+
+test('active-day gaps are not filled, and full-month registration counts are deduplicated across windows', () => {
+  const first = '2026-05-01T12:00:00', last = '2026-05-31T11:59:59';
+  const group = { ...event(first), aggregationVersion: 1, groupId: 'gapped-month', month: '2026-05', first, last, count: 500000,
+    days: [[1, first, first, 250000], [31, last, last, 250000]], codes: ['J46_TERMINAL_COVER'], examples: [{ at: first, description }] };
+  assert.deepEqual(eventEndpoints([group]).map(item => item.at), [first, last]);
+  const far = direct({ meters: [sample([signal('2026-07-01T12:00:00')])], rows: [row('001', 'P1', values({ '2026-07': 40 }))], events: [group] }).cases;
+  assert.ok(!far.some(item => item.scenario === 'combined')); assert.ok(far.some(item => item.scenario === 'event_drop'));
+  const repeated = direct({ meters: [sample([signal('2026-05-20T12:00:00'), signal('2026-06-01T12:00:00')])], rows: [row('001', 'P1', values({ '2026-06': 40, '2026-07': 40 }))], events: [group] }).cases;
+  for (const item of repeated.filter(item => item.scenario === 'combined')) {
+    assert.equal(item.evidence.eventCount, 500000); assert.equal(item.evidence.eventGroupCount, 1); assert.equal(item.score, 25);
+    for (const month of item.months) assert.equal(month.evidence.eventCount, 500000);
+  }
+});
+
+test('endpoint expansion stays lazy per requested PU and never scales with registration counts', () => {
+  const model = indexMonthly({ rows: [row()], months, warnings: [] }), count = 1000, bindings = new Map(), eventsBySerial = new Map();
+  for (let i = 0; i < count; i++) {
+    const serial = 'M' + i, first = '2026-06-01T12:00:00', last = '2026-06-30T12:00:00';
+    bindings.set(serial, { serial, account: '001', point: pointKey(row()), fields: { point: 'P1' } });
+    eventsBySerial.set(serial, [{ ...event(first, serial), aggregationVersion: 1, groupId: serial, month: '2026-06', first, last, count: 600000, days: [[1, first, first, 300000], [30, last, last, 300000]], examples: [] }]);
+  }
+  const service = createJournalCorrelation({ model, bindings, instantBySerial: new Map(), eventsBySerial, instantLoaded: false, eventsLoaded: true, now });
+  assert.equal(service.stats.expandedEventEndpoints, 0);
+  service.casesForSerial('M0'); assert.equal(service.stats.expandedEventEndpoints, 2); assert.equal(service.stats.maxEventEndpointsPerSerial, 2);
+  service.casesForSerial('M0'); assert.equal(service.stats.expandedEventEndpoints, 2);
 });
 
 test('the two journals without a qualifying decrease create a check, never an invented energy loss', () => {

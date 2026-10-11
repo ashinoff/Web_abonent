@@ -25,6 +25,67 @@ function network(t, version = '1') {
   t.mock.method(globalThis, 'fetch', async url => response(new URL(url).searchParams.get('role'), version));
 }
 
+async function seedLegacyEvents(rows) {
+  await listOfflineCopies(source);
+  const request = indexedDB.open('abonent-prepared-v1', 2);
+  const db = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+  const body = new Blob([JSON.stringify({ format:1, role:'events', rows, warnings:[] })], { type:'application/json' });
+  const value = { body, revision:'legacy-events', savedAt:12345, stale:true };
+  const key = JSON.stringify([source, events.path, events.role]);
+  const tx = db.transaction(['packages','metadata'], 'readwrite');
+  tx.objectStore('packages').put(value, key);
+  tx.objectStore('metadata').put({ source, ...events, resPath:'/ЭС/РЭС', bytes:body.size, revision:value.revision, savedAt:value.savedAt, stale:true }, key);
+  await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+  db.close(); return body.size;
+}
+const repeatedEvents = count => Array.from({ length:count }, (_, i) => ['000001', new Date(Date.UTC(2025,9,9,8,0,i)).toISOString().slice(0,19), 'Вскрытый элемент устройства "Клеммная крышка"']);
+
+test('an old offline journal shrinks to monthly groups without network or revision changes', async t => {
+  const bytes = await seedLegacyEvents(repeatedEvents(10000));
+  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('Offline compaction must not use the network'); });
+  const result = await fetchPrepared({ source, ...events, offlineOnly:true });
+  assert.equal(result.data.rows, undefined); assert.equal(result.data.groups.length, 1);
+  assert.equal(result.data.groups[0].count, 10000); assert.equal(result.data.groups[0].serial, '000001');
+  assert.equal(result.revision, 'legacy-events'); assert.equal(result.savedAt, 12345); assert.equal(result.stale, true);
+  const entry = (await listOfflineCopies(source))[0].files[0];
+  assert.ok(entry.bytes < bytes / 100); assert.equal(entry.revision, 'legacy-events'); assert.equal(entry.savedAt, 12345);
+  const again = await fetchPrepared({ source, ...events, offlineOnly:true });
+  assert.deepEqual(again.data, result.data); assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('a whole-RES download stores a compact journal even when the server returns old raw rows', async t => {
+  const raw = { format:1, role:'events', rows:repeatedEvents(1000), warnings:[] };
+  t.mock.method(globalThis, 'fetch', async () => Response.json(raw, { headers:{ 'X-Prepared-Revision':'old-server', 'X-Prepared-Stale':'0' } }));
+  const downloaded = await downloadOfflineCopy(options([events]));
+  assert.ok(downloaded.bytes < JSON.stringify(raw).length / 50);
+  navigator.onLine = false;
+  const opened = await fetchPrepared({ source, ...events, offlineOnly:true });
+  assert.equal(opened.data.rows, undefined); assert.equal(opened.data.groups[0].count, 1000);
+  assert.equal(opened.revision, 'old-server');
+});
+
+test('quota failure during local journal compaction retains the usable previous copy', async t => {
+  const bytes = await seedLegacyEvents(repeatedEvents(200));
+  const put = IDBObjectStore.prototype.put;
+  t.mock.method(IDBObjectStore.prototype, 'put', function(value, key) {
+    if (this.name === 'packages') throw new DOMException('full', 'QuotaExceededError');
+    return put.call(this, value, key);
+  });
+  const result = await fetchPrepared({ source, ...events, offlineOnly:true });
+  assert.equal(result.data.groups[0].count, 200);
+  assert.equal((await listOfflineCopies(source))[0].files[0].bytes, bytes);
+});
+
+test('an offline compaction already in flight cannot restore a deleted RES', async t => {
+  await seedLegacyEvents(repeatedEvents(100));
+  const entered = waitFor(), resume = waitFor(), original = Blob.prototype.text;
+  t.mock.method(Blob.prototype, 'text', async function() { entered.resolve(); await resume.promise; return original.call(this); });
+  const request = fetchPrepared({ source, ...events, offlineOnly:true });
+  const rejection = assert.rejects(request, { name:'AbortError' });
+  await entered.promise; await deleteOfflineCopy(source, '/ЭС/РЭС'); resume.resolve();
+  await rejection; assert.deepEqual(await listOfflineCopies(source), []);
+});
+
 test('server access denials and a cleared RES never fall back to a saved online copy', async t => {
   network(t);await fetchPrepared({source,...registry});
   for(const [status,code] of [[401,'auth_required'],[403,'res_blocked'],[409,'res_changed']]){

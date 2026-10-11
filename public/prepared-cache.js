@@ -143,6 +143,30 @@ async function networkPackage({ path, role, saved, signal, fresh = false }) {
   return { body, revision: response.headers.get('X-Prepared-Revision'), savedAt: Date.now(), stale };
 }
 
+// Shrink an existing raw journal copy without a network request. Keep the
+// server revision and save time: this changes local storage, not source data.
+async function readPackage(value, role, signal) {
+  let data = JSON.parse(await value.body.text());
+  signal?.throwIfAborted();
+  if (role === 'events' && data.format === 1 && data.role === role && Array.isArray(data.rows)) {
+    const { normalizeEventPack } = await import('./journals.js');
+    data = normalizeEventPack(data);
+    signal?.throwIfAborted();
+    return { data, value: { ...value, body: new Blob([JSON.stringify(data)], { type: 'application/json' }) }, compacted: true };
+  }
+  return { data, value, compacted: false };
+}
+
+async function readSavedPackage(source, resPath, path, role, saved, expected, signal) {
+  const result = await readPackage(saved, role, signal);
+  if (result.data.format !== 1 || result.data.role !== role) throw new Error('Сохранённая копия повреждена. Скачайте РЭС заново при наличии связи.');
+  if (result.compacted && expected !== null) {
+    try { await savePackages(source, resPath, [{ path, role, value: result.value }], expected, { signal }); }
+    catch (error) { if (error.name === 'AbortError') throw error; /* Retain the usable old copy if storage is full. */ }
+  }
+  return result.data;
+}
+
 export async function fetchPrepared({ source, path, role, signal, offlineOnly = false }) {
   const resPath = parentPath(path), key = packageKey({ source, path, role });
   const expected = await generation(source, resPath, signal).catch(() => null);
@@ -151,14 +175,14 @@ export async function fetchPrepared({ source, path, role, signal, offlineOnly = 
   if (offlineOnly) {
     if (!saved || expected === null || await generation(source, resPath, signal) !== expected)
       throw new Error('На телефоне нет сохранённой копии этого файла. Скачайте РЭС заново при наличии связи.');
-    const data = JSON.parse(await saved.body.text());
+    const data = await readSavedPackage(source, resPath, path, role, saved, expected, signal);
     signal?.throwIfAborted();
     if (data.format !== 1 || data.role !== role) throw new Error('Сохранённая копия повреждена. Скачайте РЭС заново при наличии связи.');
     return { data, offline:true, cached:true, savedAt:saved.savedAt, revision:saved.revision, stale:saved.stale };
   }
   try {
-    const value = await networkPackage({ path, role, saved, signal });
-    const data = JSON.parse(await value.body.text());
+    const received = await networkPackage({ path, role, saved, signal });
+    const { data, value } = await readPackage(received, role, signal);
     signal?.throwIfAborted();
     if (data.format !== 1 || data.role !== role) throw new Error('Неизвестный формат подготовленных данных.');
     let cached = false;
@@ -170,7 +194,7 @@ export async function fetchPrepared({ source, path, role, signal, offlineOnly = 
   } catch (error) {
     signal?.throwIfAborted();
     if (error.name === 'AbortError' || [401,403].includes(error.status) || error.code==='res_changed' || !saved || await generation(source, resPath, signal).catch(() => null) !== expected) throw error;
-    return { data: JSON.parse(await saved.body.text()), offline: true, cached: true, savedAt: saved.savedAt, revision: saved.revision, stale: saved.stale };
+    return { data: await readSavedPackage(source, resPath, path, role, saved, expected, signal), offline: true, cached: true, savedAt: saved.savedAt, revision: saved.revision, stale: saved.stale };
   }
 }
 
@@ -183,7 +207,12 @@ export async function downloadOfflineCopy({ source, resPath, files, signal, onPr
     const { path, role } = files[i];
     signal?.throwIfAborted(); onProgress({ index: i + 1, total: files.length, role });
     const saved = await getRecord('packages', packageKey({ source, path, role }), signal);
-    const value = await networkPackage({ path, role, saved, signal, fresh: true });
+    let value = await networkPackage({ path, role, saved, signal, fresh: true });
+    if (role === 'events') {
+      const prepared = await readPackage(value, role, signal);
+      if (prepared.data.format !== 1 || prepared.data.role !== role) throw new Error('Неизвестный формат подготовленных данных.');
+      value = prepared.value;
+    }
     entries.push({ path, role, value });
   }
   signal?.throwIfAborted();

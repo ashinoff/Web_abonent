@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { indexMonthly } from '../public/monthly.js';
 import { createAnalysisService } from '../public/analysis-service.js';
-import { correlateJournalMonths } from '../public/journal-analysis.js';
+import { correlateJournalMonths, createJournalAnalysis } from '../public/journal-analysis.js';
 import { TUNE_DEFS } from '../public/analysis-engine.js';
 import { flagObservation } from '../public/analysis-observations.js';
 
@@ -74,7 +74,8 @@ test('TU and TP selections include only their serials while an account report su
 test('closings and unclassified descriptions remain available without creating intrusion flags', () => {
   const journals = { events: eventBook([['000123', '2026-04-05T10:30:00', 'Клеммная крышка закрыта'], ['000123', '2026-04-06T10:30:00', 'Синхронизация времени']]) };
   const result = make([row()], [record()], journals).consumer('001', {}).result;
-  assert.equal(result.journal.events.length, 2); assert.equal(result.journal.recognizedEvents, 0); assert.equal(result.journalPriority, 'none');
+  assert.equal(result.journal.events.length, 1); assert.equal(result.journal.eventRegistrationCount, 2); assert.equal(result.journal.events[0].examples.length, 2);
+  assert.equal(result.journal.recognizedEvents, 0); assert.equal(result.journalPriority, 'none');
   assert.ok(!result.flags.some(f => f.source));
 });
 
@@ -131,12 +132,44 @@ test('latest metrics are capped in the card but the report retains every PU of a
   assert.equal(report.rows.length, 1); assert.equal(report.rows[0].result.total, 840);
 });
 
-test('chart event display is bounded while report retains every original event', () => {
+test('recurring legacy registrations become one monthly chart and report group with all counts', () => {
   const events = Array.from({ length: 601 }, (_, n) => ['000123', `2026-04-05T10:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`, opening]);
   const service = make([row()], [record()], { events: eventBook(events) });
   const result = service.consumer('001', {}).result;
-  assert.equal(result.journal.events.length, 500); assert.equal(result.journal.eventCount, 601); assert.equal(result.journal.displayTruncated, true);
-  assert.equal(service.report({}).events.length, 601); assert.equal(service.report({}).rows.length, 1);
+  assert.equal(result.journal.events.length, 1); assert.equal(result.journal.eventCount, 601); assert.equal(result.journal.displayTruncated, false);
+  assert.equal(result.journal.eventRegistrationCount, 601); assert.equal(result.journal.eventGroupCount, 1); assert.equal(result.journal.recognizedRegistrationCount, 601);
+  const report = service.report({}); assert.equal(report.events.length, 1); assert.equal(report.events[0].count, 601); assert.equal(report.events[0].days.length, 1);
+  assert.equal(report.events[0].first, events[0][1]); assert.equal(report.events[0].last, events.at(-1)[1]); assert.equal(report.rows.length, 1);
+  assert.equal(report.coverage.events.totalRegistrations, 601); assert.equal(report.coverage.events.totalGroups, 1);
+  assert.equal(result.journalScore, make([row()], [record()], { events: eventBook() }).consumer('001', {}).result.journalScore);
+});
+
+test('600,000 compact registrations allocate only monthly groups and active-day endpoints', () => {
+  const days = Array.from({ length: 30 }, (_, i) => { const date = `2026-04-${String(i + 1).padStart(2, '0')}`; return [i + 1, `${date}T00:00:00`, `${date}T23:59:00`, 20000]; });
+  const pack = { format: 1, role: 'events', aggregationVersion: 1, groups: [{ serial: '000123', month: '2026-04', codes: ['J46_TERMINAL_COVER'], first: days[0][1], last: days.at(-1)[2], count: 600000, days,
+    examples: [{ at: days[0][1], description: opening }], examplesTruncated: true }], stats: { accepted: 600000, groups: 1 }, warnings: [] };
+  const model = indexMonthly({ rows: [row()], months, warnings: [] }), analysis = createJournalAnalysis(model, [record()], { events: pack });
+  assert.equal(analysis.stats.eventRows, 600000); assert.equal(analysis.stats.eventGroups, 1);
+  assert.equal(analysis.reportEvents().length, 1); assert.equal(analysis.reportEvents()[0].count, 600000);
+  const cases = analysis.reportCases(new Set(['001'])); assert.ok(cases.length);
+  assert.equal(analysis.stats.correlation.expandedEventEndpoints, 60); assert.equal(analysis.stats.correlation.maxEventEndpointsPerSerial, 60);
+  assert.equal(cases[0].evidence.eventCount, 600000); assert.equal(cases[0].evidence.eventGroupCount, 1); assert.equal(cases[0].evidence.eventRegistrationCountScope, 'participating_month_groups');
+  assert.ok(cases[0].evidence.events.length <= 8); assert.match(cases[0].detail, /полные месячные счётчики/);
+  const result = createAnalysisService(model, [record()], { events: pack }).consumer('001', {}).result;
+  assert.equal(result.journal.events.length, 1); assert.equal(result.journal.eventRegistrationCount, 600000); assert.equal(result.journal.eventCount, 600000);
+  assert.equal(result.journal.flags.find(flag => flag.code === 'J46_TERMINAL_COVER').count, 600000);
+});
+
+test('monthly category signatures preserve compound evidence without counting its registrations twice', () => {
+  const combined = `${opening}\nВскрытый элемент устройства "Магнитная пломба постоянного поля"`;
+  const source = [['000123', '2026-04-05T10:30:00', combined], ['000123', '2026-04-05T10:31:00', combined], ['000123', '2026-04-06T10:30:00', opening], ['999', '2026-04-05T10:30:00', combined]];
+  const service = make([row()], [record()], { events: eventBook(source), instant: instantBook([electrical]) });
+  const result = service.consumer('001', {}).result, report = service.report({});
+  assert.equal(result.journal.eventRegistrationCount, 3); assert.equal(result.journal.eventGroupCount, 2);
+  assert.equal(result.journal.flags.find(f => f.code === 'J46_TERMINAL_COVER').count, 3); assert.equal(result.journal.flags.find(f => f.code === 'J46_MAGNET_DC').count, 2);
+  assert.equal(report.events.length, 3); assert.equal(report.unmatched.events.rows, 1); assert.equal(report.unmatched.events.groups, 1);
+  assert.equal(report.coverage.events.totalRegistrations, 4); assert.equal(result.journal.coverage.events.matchedRegistrations, 3);
+  assert.equal(result.journal.cases.find(item => item.scenario === 'combined').evidence.eventCount, 3);
 });
 
 test('unknown and stopped monthly histories keep their classes and report concrete data reasons', () => {

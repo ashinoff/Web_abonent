@@ -11,7 +11,7 @@ async function rebuildAnalysis() {
   analysisService = createAnalysisService(monthlyModel, monthlyRecords, journalPacks);
 }
 function journalSummary(pack) {
-  return { role: pack.role, stats: pack.stats, warnings: pack.warnings || [], meterCount: pack.meters?.length ?? new Set(pack.rows?.map(row => row[0])).size, reportPeriod: pack.reportPeriod, coefficientMode: pack.coefficientMode };
+  return { role: pack.role, stats: pack.stats, warnings: pack.warnings || [], meterCount: pack.meters?.length ?? pack.stats?.meters ?? new Set(pack.groups?.map(group => group.serial) || pack.rows?.map(row => row[0])).size, reportPeriod: pack.reportPeriod, coefficientMode: pack.coefficientMode };
 }
 function ensureXLSX() { if (!xlsxLoaded) { importScripts('./vendor/xlsx.full.min.js'); xlsxLoaded = true; } }
 self.onmessage = async ({ data }) => {
@@ -30,7 +30,7 @@ self.onmessage = async ({ data }) => {
       journalControllers.set(id, controller);
       try {
       if (action === 'loadPreparedJournal') {
-        const { fetchPrepared } = await import('./prepared-cache.js?v=16');
+        const { fetchPrepared } = await import('./prepared-cache.js?v=17');
         ({ data: pack, ...cacheInfo } = await fetchPrepared({ ...payload, signal: controller.signal }));
       } else {
         ensureXLSX();
@@ -41,6 +41,10 @@ self.onmessage = async ({ data }) => {
       controller.signal.throwIfAborted();
       if (generation !== journalGeneration) throw new Error('Чтение журнала отменено.');
       if (pack?.format !== 1 || pack.role !== payload.role) throw new Error('Неверный пакет журнала.');
+      if (payload.role === 'events') {
+        const { normalizeEventPack } = await import('./journals.js');
+        pack = normalizeEventPack(pack);
+      }
       journalPacks[payload.role] = pack;
       await rebuildAnalysis();
       self.postMessage({ id, result: { ...journalSummary(pack), ...cacheInfo } }); return;
@@ -60,7 +64,7 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: { buffer, count: report.rows.length } }, [buffer]); return;
     }
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=16');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=17');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');

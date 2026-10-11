@@ -89,15 +89,40 @@ function mergeRanges(ranges) {
   }
   return out;
 }
+// Monthly groups keep two actual registrations per active day. Expanding these
+// endpoints for one PU is sufficient for our >=31-day search windows, without
+// filling gaps or retaining hundreds of thousands of raw event objects.
+export function eventEndpoints(groups) {
+  const out = [];
+  for (const group of groups) {
+    if (!group.kind) continue;
+    const grouped = group.aggregationVersion === 1 || Array.isArray(group.days);
+    const groupId = group.groupId || JSON.stringify([group.serial, group.month || group.at?.slice(0, 7), group.codes || group.code, grouped ? '' : `${group.at}|${group.description}`]);
+    const timestamps = grouped && group.days?.length ? group.days.flatMap(day => [day[1], day[2]]) : [group.first || group.at, group.last || group.at];
+    for (const at of uniq(timestamps)) {
+      const ms = civilMilliseconds(at); if (ms == null) continue;
+      const example = group.examples?.find(item => item.at === at);
+      out.push({ ...group, groupId, at, ms,
+        timestampDetailExact: !grouped || !!example,
+        description: !grouped ? group.description : example?.description || `Категории месячной группы: ${group.title || group.codes?.join(', ') || ''}. Описание именно этой регистрации не сохранено. Примеры месяца с собственными датами: ${group.description || ''}` });
+    }
+  }
+  return out.sort((a, b) => a.ms - b.ms || a.groupId.localeCompare(b.groupId));
+}
 function eventSummary(events, ranges) {
-  const merged = mergeRanges(ranges), count = merged.reduce((sum, [from, to]) => sum + to - from, 0), representatives = new Map();
+  const merged = mergeRanges(ranges), timestampCount = merged.reduce((sum, [from, to]) => sum + to - from, 0), representatives = new Map(), groups = new Map();
   for (const [from, to] of merged) {
     if (to <= from) continue;
+    for (let i = from; i < to; i++) {
+      const event = events[i];
+      if (!groups.has(event.groupId)) groups.set(event.groupId, Number.isFinite(event.count) && event.count > 0 ? event.count : 1);
+    }
     representatives.set(from, events[from]); representatives.set(to - 1, events[to - 1]);
   }
   const values = [...representatives].sort((a, b) => a[0] - b[0]);
   const selected = (values.length <= DETAIL_LIMIT ? values : [...values.slice(0, DETAIL_LIMIT / 2), ...values.slice(-DETAIL_LIMIT / 2)]).map(([, event]) => event);
-  return { events: selected, eventCount: count, eventDetailsTruncated: count > selected.length, ranges: merged };
+  return { events: selected, eventCount: [...groups.values()].reduce((sum, count) => sum + count, 0), eventGroupCount: groups.size,
+    eventTimestampCount: timestampCount, eventRegistrationCountScope: 'participating_month_groups', eventDetailsTruncated: timestampCount > selected.length, ranges: merged };
 }
 function electricalSummary(observations) {
   const distinct = new Map(observations.map(observation => [`${observation.code}|${observation.at}`, observation]));
@@ -117,7 +142,7 @@ export function createJournalCorrelation({ model, bindings, instantBySerial, eve
   const currentParts = Object.fromEntries(MOSCOW_MONTH.formatToParts(now).map(part => [part.type, part.value]));
   const currentMonth = +currentParts.year * 12 + +currentParts.month - 1;
   const fieldIndexes = new Map(instantFields.map((field, i) => [field, i]));
-  const stats = { comparisonMonths: 0, comparisonBuilds: 0, skippedWithoutCandidates: 0 };
+  const stats = { comparisonMonths: 0, comparisonBuilds: 0, skippedWithoutCandidates: 0, expandedEventEndpoints: 0, maxEventEndpointsPerSerial: 0 };
   for (const row of model.rows) {
     const key = ownPoint(row.accountKey, pointKey(row));
     if (!pointRows.has(key)) pointRows.set(key, []);
@@ -129,7 +154,8 @@ export function createJournalCorrelation({ model, bindings, instantBySerial, eve
     if (!binding) return [];
     const point = ownPoint(binding.account, binding.point), rows = pointRows.get(point) || [];
     const sample = instantBySerial.get(serial);
-    const electrical = electricalObservations(sample), events = (eventsBySerial.get(serial) || []).filter(event => event.kind && civilMilliseconds(event.at) != null).sort((a, b) => a.at.localeCompare(b.at));
+    const electrical = electricalObservations(sample), eventGroups = (eventsBySerial.get(serial) || []).filter(event => event.kind), events = eventEndpoints(eventGroups);
+    stats.expandedEventEndpoints += events.length; stats.maxEventEndpointsPerSerial = Math.max(stats.maxEventEndpointsPerSerial, events.length);
     const latestAt = sample?.latest?.at, latestMonth = ordinal(latestAt), latestIndex = monthIndexes.get(latestAt?.slice(0, 7));
     const rawValues = sample?.latest?.values, valueAt = field => Array.isArray(rawValues) ? rawValues[fieldIndexes.get(field)] : rawValues?.[field];
     const totalPower = valueAt('activeTotal'), phasePower = [1, 2, 3].map(p => valueAt('active' + p)).filter(value => Number.isFinite(value) && value > 0).reduce((sum, value) => sum + value, 0);
@@ -176,7 +202,8 @@ export function createJournalCorrelation({ model, bindings, instantBySerial, eve
     }
     const availability = {
       instant: { loaded: !!instantLoaded, matched: !!sample, meaningfulEvidence: electrical.length > 0 || !!loadZero, reason: !instantLoaded ? 'Журнал 31 не загружен.' : !sample ? 'Для этого ПУ нет измерений журнала 31.' : !electrical.length && !loadZero ? 'Нет значимых датированных электрических признаков.' : '' },
-      events: { loaded: !!eventsLoaded, matched: (eventsBySerial.get(serial)?.length || 0) > 0, recognizedEvents: events.length, reason: !eventsLoaded ? 'Журнал 46 не загружен.' : !events.length ? 'Для этого ПУ нет распознанных событий вскрытия или магнитного воздействия.' : '' },
+      events: { loaded: !!eventsLoaded, matched: (eventsBySerial.get(serial)?.length || 0) > 0, recognizedEvents: eventGroups.reduce((sum, event) => sum + (Number.isFinite(event.count) && event.count > 0 ? event.count : 1), 0),
+        recognizedGroups: eventGroups.length, reason: !eventsLoaded ? 'Журнал 46 не загружен.' : !events.length ? 'Для этого ПУ нет распознанных событий вскрытия или магнитного воздействия.' : '' },
     };
     const pointLabel = [rows[0]?.pointName, rows[0]?.pointNumber && '№ ' + rows[0].pointNumber, rows[0]?.point && 'СТЕК ' + rows[0].point].filter(Boolean).join(' · ');
     function addCase(scenario, month, observations, eventRanges, { priority, temporalRelation, reason = '' } = {}) {
@@ -195,7 +222,7 @@ export function createJournalCorrelation({ model, bindings, instantBySerial, eve
       const temporalText = temporal === 'same_month' ? 'Это совпадение в пределах месяца; порядок изменения потребления внутри месяца не установлен.'
         : temporal === 'after' ? 'Снижение зарегистрировано в последующем месяце, не позднее двух календарных месяцев после признаков. Причинная связь не установлена.'
         : temporal === 'pre_existing' ? preExistingDecline.reason : 'Журналы содержат совместимые по времени признаки одного ПУ, но подходящее снижение потребления не установлено.';
-      period.detail = `${month?.month ? `${month.month}: ПО собственной ТУ ${fmt(month.value)} кВт·ч. ${comparisonText(period.comparisons)}. ` : ''}${temporalText}${preExistingDecline ? ` До признаков: ${preExistingDecline.month}, ${fmt(preExistingDecline.value)} кВт·ч; дополнительное снижение ${preExistingDecline.additionalDropPercent == null ? 'не вычисляется при нулевой базе' : fmt(preExistingDecline.additionalDropPercent) + '%'}.` : ''}${seasonal ? ' Альтернатива: расход в том же месяце прошлого года не ниже более чем на 10%; возможна сезонность.' : ''}${reason ? ' ' + reason : ''}`;
+      period.detail = `${month?.month ? `${month.month}: ПО собственной ТУ ${fmt(month.value)} кВт·ч. ${comparisonText(period.comparisons)}. ` : ''}${temporalText}${preExistingDecline ? ` До признаков: ${preExistingDecline.month}, ${fmt(preExistingDecline.value)} кВт·ч; дополнительное снижение ${preExistingDecline.additionalDropPercent == null ? 'не вычисляется при нулевой базе' : fmt(preExistingDecline.additionalDropPercent) + '%'}.` : ''}${seasonal ? ' Альтернатива: расход в том же месяце прошлого года не ниже более чем на 10%; возможна сезонность.' : ''}${v.eventCount ? ` Журнал 46: ${v.eventCount} регистраций в ${v.eventGroupCount} участвующих месячных группах; это полные месячные счётчики, а не число независимых вскрытий или регистраций внутри окна ±31 день.` : ''}${reason ? ' ' + reason : ''}`;
       let group = groups.get(groupKey);
       if (!group) {
         group = { id: JSON.stringify([binding.account, binding.point, serial, groupKey]), account: binding.account, serial: binding.serial,

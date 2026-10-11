@@ -21,6 +21,7 @@
 .journal-metrics dt{font-size:10px;color:#7b8b9e}
 .journal-metrics dd{font-size:11px;font-weight:600;color:#55728d;margin:0;white-space:nowrap}
 .chart-event-legend{display:flex;flex-wrap:wrap;gap:8px 13px;color:#7b8b9e;font-size:10px;margin-top:13px}
+.chart-event-legend>small{flex-basis:100%;font-size:9px;line-height:1.65;color:#8895a7}
 .chart-event-legend span::before{content:'';display:inline-block;width:8px;height:8px;vertical-align:middle;margin-right:6px;background:var(--event-color);border-radius:2px}
 [data-event-kind="intrusion"]{--event-color:#9783b2}
 [data-event-kind="magnetic"]{--event-color:#b9797e}
@@ -40,6 +41,13 @@
 .chart-event-details strong{display:block;font-size:11px;color:#5d718b;line-height:1.5}
 .chart-event-details p,.chart-event-outside,.chart-event-limit{font-size:10px;line-height:1.65;color:#8190a2;overflow-wrap:anywhere;margin:5px 0 0}
 .chart-event-details li>p{white-space:pre-wrap}
+.chart-event-counts,.event-registration-note{font-size:9px;line-height:1.7;color:#8290a2;margin:7px 0;overflow-wrap:anywhere}
+.chart-event-details .event-registration-count{color:#68819c}
+.chart-event-details .event-registration-count strong{display:inline;font-size:10px}
+.chart-event-details .event-registration-note{font-size:9px}
+.chart-event-details .event-examples{display:grid;gap:7px;border-top:1px solid #e2e7ef;padding-top:8px;margin-top:9px;font-size:9px;color:#8492a5}
+.event-examples>div{padding:7px 8px;background:#ffffff90;border-radius:5px;min-width:0}
+.event-examples p{white-space:pre-wrap;margin-top:4px}
 .chart-event-outside{margin-top:12px}
 .chart-event-legend[hidden],.chart-event-details[hidden]{display:none}
 .journal-case{padding:15px;border:1px solid #e2d8c9;border-radius:12px;background:#faf6ee;margin:12px 0}

@@ -2,7 +2,8 @@ import { clean, norm, idKey } from './core.js';
 import { numeric } from './monthly.js';
 
 export const JOURNAL_ANALYSIS_VERSION = 2;
-const MAX_ROWS = 500000, MAX_METERS = 100000;
+export const EVENTS_PACKAGE_VERSION = 1;
+const MAX_ROWS = 1000000, MAX_METERS = 100000;
 const metric = (key, title, unit) => ({ key, title, unit });
 export const INSTANT_METRICS = [
   metric('forwardMin','Мощность A+, минимум профиля','кВт'), metric('forwardAvg','Мощность A+, среднее профиля','кВт'), metric('forwardMax','Мощность A+, максимум профиля','кВт'),
@@ -52,6 +53,12 @@ const EVENT_DEFS = [
   { rx:/корпус/, code:'J46_CASE', title:'Вскрытие корпуса', kind:'opening' },
   { rx:/магнит/, code:'J46_MAGNETIC', title:'Событие магнитного воздействия', kind:'magnetic' },
 ];
+export function eventClassification(code) {
+  const def=EVENT_DEFS.find(item=>item.code===code);
+  return def?{code:def.code,title:def.title,kind:def.kind,recommendation:def.kind==='magnetic'
+    ? 'Проверить пломбы и журнал работ; сопоставить событие с изменением потребления, подтвердить воздействие инструментальной проверкой.'
+    : 'Проверить журнал плановых работ, пломбы и схему подключения; сопоставить дату события с потреблением.'}:null;
+}
 function kindsForClause(description) {
   const s = norm(description);
   if (!s || /(?:не\s+(?:вскрыт|открыт|обнаружен|зафиксирован)|нет\s+(?:магнит|воздейств)|отсутств(?:ует|ие)|снят(?:ие)?\s+магнит|закрыт|закрытие|восстановлен|сброс.*(?:магнит|пломб))/.test(s)) return [];
@@ -62,9 +69,7 @@ function kindsForClause(description) {
   // AC/DC already identify a magnetic category; the generic magnetic event
   // must not count the same activation a second time.
   const specificMagnet=defs.some(d=>d.code==='J46_MAGNET_AC'||d.code==='J46_MAGNET_DC');
-  return defs.filter(d=>d.code!=='J46_MAGNETIC'||!specificMagnet).map(def=>({ code:def.code,title:def.title,kind:def.kind,recommendation:def.kind==='magnetic'
-    ? 'Проверить пломбы и журнал работ; сопоставить событие с изменением потребления, подтвердить воздействие инструментальной проверкой.'
-    : 'Проверить журнал плановых работ, пломбы и схему подключения; сопоставить дату события с потреблением.' }));
+  return defs.filter(d=>d.code!=='J46_MAGNETIC'||!specificMagnet).map(def=>eventClassification(def.code));
 }
 export function eventKinds(description) {
   // A J cell may describe both restoration and an independent opening.
@@ -88,6 +93,80 @@ function identifier(cell) {
     return /^0+$/.test(cell.z||'') ? String(v).padStart(cell.z.length,'0') : String(v);
   }
   return clean(v);
+}
+export const journalIdentifier=cell=>identifier(cell&&typeof cell==='object'?cell:{v:cell});
+export function detectEventHeader(row,width=row.length) {
+  if(serialHeader(row[2])&&norm(row[5])==='дата и время'&&norm(row[9])==='дополнительная информация')return {serial:2,time:5,info:9};
+  if(width===3&&serialHeader(row[0])&&norm(row[1])==='дата и время'&&norm(row[2])==='дополнительная информация')return {serial:0,time:1,info:2};
+  return null;
+}
+
+function retainEventExamples(group,at,description) {
+  const incoming={at,description},old=group.examples;
+  const first=!old.length||at<old[0].at?incoming:old[0];
+  const priorLast=old.at(-1),last=!priorLast||at>=priorLast.at?incoming:priorLast;
+  const candidates=[...old,incoming],variant=candidates.find(item=>item.description!==first.description&&item.description!==last.description);
+  const examples=[first];
+  if(variant&&!(variant.at===first.at&&variant.description===first.description))examples.push(variant);
+  if(!(last.at===first.at&&last.description===first.description))examples.push(last);
+  examples.sort((a,b)=>a.at.localeCompare(b.at));group.examples=examples;
+}
+
+export function createEventAggregator() {
+  const serials=new Map(),classifications=new Map();
+  const stats={rows:0,accepted:0,skipped:0,invalidDates:0,invalidSerials:0,emptyDescriptions:0};
+  function add(rawSerial,rawTime,rawDescription) {
+    const serialText=journalIdentifier(rawSerial),description=String(rawDescription??'');
+    if(!clean(serialText)&&!clean(rawTime)&&!description.trim())return false;
+    stats.rows++;
+    if(stats.rows>MAX_ROWS)throw new Error('В журнале больше 1 000 000 строк данных. Разделите выгрузку по периодам.');
+    const serial=serialKey(serialText),at=parseJournalTimestamp(rawTime);
+    if(!serial){stats.invalidSerials++;stats.skipped++;return false;}
+    if(!at){stats.invalidDates++;stats.skipped++;return false;}
+    if(!description.trim()){stats.emptyDescriptions++;stats.skipped++;return false;}
+    let months=serials.get(serial);
+    if(!months){if(serials.size>=MAX_METERS)throw new Error('В журнале больше 100 000 уникальных ПУ. Разделите выгрузку.');months=new Map();serials.set(serial,months);}
+    let codes=classifications.get(description);
+    if(!codes){codes=[...new Set(eventKinds(description).map(item=>item.code))].sort();if(classifications.size>=128)classifications.delete(classifications.keys().next().value);classifications.set(description,codes);}
+    const month=at.slice(0,7),signature=codes.join('|');let kinds=months.get(month);
+    if(!kinds){kinds=new Map();months.set(month,kinds);}
+    let group=kinds.get(signature);
+    if(!group){group={serial:serialText,month,codes:[...codes],first:at,last:at,count:0,examples:[],_days:new Map()};kinds.set(signature,group);}
+    group.count++;if(at<group.first)group.first=at;if(at>group.last)group.last=at;
+    const day=Number(at.slice(8,10));let daily=group._days.get(day);
+    if(!daily){daily=[day,at,at,0];group._days.set(day,daily);}
+    daily[3]++;if(at<daily[1])daily[1]=at;if(at>daily[2])daily[2]=at;
+    retainEventExamples(group,at,description);stats.accepted++;return true;
+  }
+  function finish(extraWarnings=[]) {
+    const groups=[];
+    for(const months of serials.values())for(const kinds of months.values())for(const {_days,...group}of kinds.values())groups.push({...group,days:[..._days.values()].map(day=>[...day]).sort((a,b)=>a[0]-b[0]),examplesTruncated:group.count>group.examples.length});
+    const warnings=[...extraWarnings];
+    if(stats.invalidSerials)warnings.push(`Не удалось надёжно определить серийный номер: ${stats.invalidSerials} строк. Числовые номера длиннее 15 цифр не сопоставлены.`);
+    if(stats.invalidDates)warnings.push(`Регистрации с пустой или неверной датой пропущены: ${stats.invalidDates}.`);
+    if(stats.emptyDescriptions)warnings.push(`Строки без дополнительной информации пропущены: ${stats.emptyDescriptions}.`);
+    const repeatedRows=stats.accepted-groups.length;
+    if(repeatedRows)warnings.push(`Повторные регистрации объединены по ПУ, месяцу и набору активных категорий: ${repeatedRows}. Счётчик показывает строки исходного журнала, а не число независимых вскрытий; точные дубли также входят в счётчик.`);
+    return {format:1,role:'events',analysisVersion:JOURNAL_ANALYSIS_VERSION,aggregationVersion:EVENTS_PACKAGE_VERSION,groups,stats:{...stats,groups:groups.length,meters:serials.size,repeatedRows},warnings:[...new Set(warnings)]};
+  }
+  return {add,finish,stats};
+}
+
+export function normalizeEventPack(pack) {
+  if(pack?.format!==1||pack.role!=='events')throw new Error('Неизвестный формат журнала 46.');
+  if(pack.aggregationVersion===EVENTS_PACKAGE_VERSION&&Array.isArray(pack.groups)) {
+    delete pack.rows;return pack;
+  }
+  if(!Array.isArray(pack.rows))throw new Error('Неполный пакет журнала 46.');
+  const aggregator=createEventAggregator();
+  for(const row of pack.rows)if(Array.isArray(row))aggregator.add(row[0],row[1],row[2]);
+  const oldWarnings=Array.isArray(pack.warnings)?pack.warnings:[];
+  const legacyDuplicates=Number.isSafeInteger(pack.stats?.duplicates)&&pack.stats.duplicates>0?pack.stats.duplicates:0;
+  const compact=aggregator.finish([...oldWarnings,'Сохранённый журнал 46 приведён к компактным месячным группам. Счётчики отражают сохранённые строки старого пакета; обновите источник для полного числа исходных регистраций.',...(legacyDuplicates?[`В старой копии исключены точные дубли: ${legacyDuplicates}. Счётчик рассчитан по сохранённым регистрациям; исключённые дубли не восстанавливаются.`]:[])]);
+  if(legacyDuplicates)compact.stats.legacyExcludedDuplicates=legacyDuplicates;
+  // Mutate only the package container so callers retaining this offline pack
+  // cannot inadvertently keep the original hundreds of thousands of rows.
+  delete pack.rows;Object.assign(pack,compact);return pack;
 }
 function serialFromPoint(point) {
   // A full location path may contain cadastral numbers and the model number.
@@ -229,7 +308,7 @@ function aggregateSignals(meter,signals,at) {
 function worksheetRows(ws,XLSX) {
   const range=XLSX.utils.decode_range(ws['!ref']);
   if (range.e.c>255) throw new Error('В журнале больше 256 столбцов.');
-  if (ws['!fullref']) throw new Error('В журнале больше 500 000 строк данных. Разделите выгрузку по периодам.');
+  if (ws['!fullref']) throw new Error('В журнале больше 1 000 000 строк данных. Разделите выгрузку по периодам.');
   return {range,rowAt:r=>Array.from({length:range.e.c+1},(_,c)=>valueCell(ws,r,c,XLSX)?.v??'')};
 }
 function instantColumns(header) {
@@ -301,25 +380,58 @@ function physicalUnits(header,cols,warnings,sheet) {
   return {scales,knownUnits,displacementFactors};
 }
 
+function readEventSheets(book,XLSX) {
+  const aggregator=createEventAggregator(),warnings=[];let recognized=0;
+  const date1904=!!book.Workbook?.WBProps?.date1904;
+  for(const name of book.SheetNames) {
+    const ws=book.Sheets[name];if(!ws?.['!ref'])continue;
+    const {range,rowAt}=worksheetRows(ws,XLSX),width=range.e.c+1;let columns=null,start=-1,first=-1;
+    for(let r=0;r<=Math.min(range.e.r,79);r++) {
+      const row=rowAt(r);
+      if(first<0&&row.some(value=>clean(value)))first=r;
+      columns=detectEventHeader(row,width);
+      if(columns){start=r+1;break;}
+    }
+    if(!columns&&width===3&&first>=0) {
+      const serial=journalIdentifier(valueCell(ws,first,0,XLSX)),at=parseJournalTimestamp(valueCell(ws,first,1,XLSX)?.v,XLSX,date1904),description=valueCell(ws,first,2,XLSX)?.v;
+      if(/^(?=.*\d)[\p{L}\p{N}_.\/-]+$/u.test(serial)&&at&&typeof description==='string'&&description.trim()) {
+        columns={serial:0,time:1,info:2};start=first;
+        warnings.push(`Лист «${name}»: распознана трёхколоночная выгрузка без шапки: серийный номер / дата и время / дополнительная информация.`);
+      }
+    }
+    if(!columns){warnings.push(`Лист «${name}» пропущен: не найдена шапка журнала 46 или строгая трёхколоночная выгрузка.`);delete book.Sheets[name];continue;}
+    recognized++;
+    if(range.e.r-start+1>MAX_ROWS)throw new Error('В журнале больше 1 000 000 строк данных. Разделите выгрузку по периодам.');
+    for(let r=start;r<=range.e.r;r++) {
+      const rawTime=valueCell(ws,r,columns.time,XLSX)?.v,at=parseJournalTimestamp(rawTime,XLSX,date1904);
+      aggregator.add(valueCell(ws,r,columns.serial,XLSX),at??rawTime,valueCell(ws,r,columns.info,XLSX)?.v);
+    }
+    delete book.Sheets[name];
+  }
+  if(!recognized)throw new Error('Не найдена шапка журнала 46 или строгая трёхколоночная выгрузка.');
+  if(!aggregator.stats.accepted)throw new Error('Журнал 46 не содержит пригодных строк. Проверьте серийные номера, даты и дополнительную информацию.');
+  return aggregator.finish(warnings);
+}
+
 export function readJournalWorkbook(buffer,XLSX,role) {
   if (!['instant','events'].includes(role)) throw new Error('Неизвестная роль журнала.');
   const bytes=new Uint8Array(buffer),valid=[0xd0,0xcf,0x11,0xe0].every((v,i)=>bytes[i]===v)||bytes[0]===0x50&&bytes[1]===0x4b||bytes[0]===9&&[0,2,4,8].includes(bytes[1]);
   if (!valid) throw new Error('Выберите журнал Excel в формате XLS или XLSX.');
   const book=XLSX.read(buffer,{type:'array',dense:true,cellHTML:false,cellNF:true,cellText:false,cellFormula:false,sheetRows:MAX_ROWS+82});
+  if(role==='events')return readEventSheets(book,XLSX);
   const stats={rows:0,accepted:0,skipped:0,duplicates:0,invalidDates:0,invalidSerials:0,emptyMetrics:0},warnings=[];
-  const meters=new Map(),eventRows=[],eventSeen=new Map();let recognized=0,reportPeriod=null,coefficientMode='unknown';
+  const meters=new Map();let recognized=0,reportPeriod=null,coefficientMode='unknown';
   const date1904=!!book.Workbook?.WBProps?.date1904;
   for (const name of book.SheetNames) {
     const ws=book.Sheets[name]; if (!ws?.['!ref']) continue;
     const {range,rowAt}=worksheetRows(ws,XLSX);let h=-1,top=[];
     for(let r=0;r<=Math.min(range.e.r,79);r++) {
       const row=rowAt(r);top.push(row);
-      if (role==='events' ? norm(row[2])==='серийный'&&norm(row[5])==='дата и время'&&norm(row[9])==='дополнительная информация'
-        : (row.some(v=>/^(точка учета|ту)$/.test(norm(v)))||row.some(serialHeader))&&row.some(v=>/^(время|дата и время)$/.test(norm(v)))&&row.some(v=>/^активная мощность/.test(norm(v)))) {h=r;break;}
+      if ((row.some(v=>/^(точка учета|ту)$/.test(norm(v)))||row.some(serialHeader))&&row.some(v=>/^(время|дата и время)$/.test(norm(v)))&&row.some(v=>/^активная мощность/.test(norm(v)))) {h=r;break;}
     }
     if(h<0) {warnings.push(`Лист «${name}» пропущен: не найдена шапка журнала ${role==='instant'?'31':'46'}.`);delete book.Sheets[name];continue;}
     recognized++;
-    if(range.e.r-h>MAX_ROWS || stats.rows+range.e.r-h>MAX_ROWS) throw new Error('В журнале больше 500 000 строк данных. Разделите выгрузку по периодам.');
+    if(range.e.r-h>MAX_ROWS || stats.rows+range.e.r-h>MAX_ROWS) throw new Error('В журнале больше 1 000 000 строк данных. Разделите выгрузку по периодам.');
     const cols=role==='instant'?instantColumns(top[h]):null;
     const unitContext=role==='instant'?physicalUnits(top[h],cols,warnings,name):null;
     const sheetUnscaled=role==='instant'&&top.slice(0,h).some(row=>/без учета коэффициентов трансформации/.test(norm(row.join(' '))));
@@ -340,44 +452,32 @@ export function readJournalWorkbook(buffer,XLSX,role) {
     for(let r=h+1;r<=range.e.r;r++) {
       const serialCell=serialCol>=0?valueCell(ws,r,serialCol,XLSX):null,pointCell=pointCol>=0?valueCell(ws,r,pointCol,XLSX):null;
       const rawSerial=serialCol>=0?identifier(serialCell):serialFromPoint(pointCell?.v);
-      const rawTime=valueCell(ws,r,timeCol,XLSX)?.v,rawInfo=role==='events'?valueCell(ws,r,9,XLSX)?.v:null;
+      const rawTime=valueCell(ws,r,timeCol,XLSX)?.v;
       const values=role==='instant'?INSTANT_FIELDS.map(key=>{
         const raw=numeric(valueCell(ws,r,cols.get(key)??-1,XLSX)?.v),scale=unitContext.scales.get(key);
         const converted=raw!=null&&scale!=null?raw*scale:null;
         return finite(converted)?converted:null;
       }):null;
-      if(!clean(serialCell?.v??pointCell?.v) && !clean(rawTime) && !clean(rawInfo) && (!values||values.every(v=>v==null))) continue;
+      if(!clean(serialCell?.v??pointCell?.v) && !clean(rawTime) && (!values||values.every(v=>v==null))) continue;
       stats.rows++;
       if(!rawSerial || !serialKey(rawSerial)) {stats.invalidSerials++;stats.skipped++;continue;}
       const serial=serialKey(rawSerial),at=parseJournalTimestamp(rawTime,XLSX,date1904);
       if(!at) stats.invalidDates++;
-      if(role==='events') {
-        const details=String(rawInfo??'');
-        if(!at || !details.trim()) {stats.skipped++;continue;}
-        let dates=eventSeen.get(serial);
-        if(!dates) {if(eventSeen.size>=MAX_METERS)throw new Error('В журнале больше 100 000 уникальных ПУ. Разделите выгрузку.');dates=new Map();eventSeen.set(serial,dates);}
-        let detailsSet=dates.get(at);if(!detailsSet){detailsSet=new Set();dates.set(at,detailsSet);}
-        if(detailsSet.has(details)){stats.duplicates++;continue;}
-        detailsSet.add(details);eventRows.push([rawSerial,at,details]);stats.accepted++;
-      } else {
-        if(values.every(v=>v==null)){stats.emptyMetrics++;stats.skipped++;continue;}
-        let meter=meters.get(serial);
-        if(!meter) {if(meters.size>=MAX_METERS)throw new Error('В журнале больше 100 000 уникальных ПУ. Разделите выгрузку.');meter={serial:rawSerial,samples:0,datedSamples:0,first:null,last:null,latest:null,_signals:new Map()};meters.set(serial,meter);}
-        meter.samples++;if(at)meter.datedSamples++;extendDates(meter,at);
-        if(!meter.latest || at && (!meter.latest.at || at>=meter.latest.at) || !at && !meter.latest.at) meter.latest={at,values};
-        const v=Object.fromEntries(INSTANT_FIELDS.map((key,j)=>[key,values[j]]));
-        aggregateSignals(meter,[...detectSignals(v,{...unitContext,compareUI:sheetUnscaled}),...detectProfileSignals(v,reportPeriod)],at);stats.accepted++;
-      }
+      if(values.every(v=>v==null)){stats.emptyMetrics++;stats.skipped++;continue;}
+      let meter=meters.get(serial);
+      if(!meter) {if(meters.size>=MAX_METERS)throw new Error('В журнале больше 100 000 уникальных ПУ. Разделите выгрузку.');meter={serial:rawSerial,samples:0,datedSamples:0,first:null,last:null,latest:null,_signals:new Map()};meters.set(serial,meter);}
+      meter.samples++;if(at)meter.datedSamples++;extendDates(meter,at);
+      if(!meter.latest || at && (!meter.latest.at || at>=meter.latest.at) || !at && !meter.latest.at) meter.latest={at,values};
+      const v=Object.fromEntries(INSTANT_FIELDS.map((key,j)=>[key,values[j]]));
+      aggregateSignals(meter,[...detectSignals(v,{...unitContext,compareUI:sheetUnscaled}),...detectProfileSignals(v,reportPeriod)],at);stats.accepted++;
     }
     delete book.Sheets[name];
   }
   if(!recognized)throw new Error(`Не найдена шапка журнала ${role==='instant'?'31':'46'}.`);
   if(!stats.accepted)throw new Error(`Журнал ${role==='instant'?'31':'46'} не содержит пригодных строк. Проверьте серийные номера, даты и значения.`);
   if(stats.invalidSerials)warnings.push(`Не удалось надёжно определить серийный номер: ${stats.invalidSerials} строк. Числовые номера длиннее 15 цифр и строки без явного № не сопоставлены.`);
-  if(stats.invalidDates)warnings.push(role==='events'?`События с пустой или неверной датой пропущены: ${stats.invalidDates}.`:`Измерения без корректного времени: ${stats.invalidDates}; они не привязаны к месяцам графика.`);
+  if(stats.invalidDates)warnings.push(`Измерения без корректного времени: ${stats.invalidDates}; они не привязаны к месяцам графика.`);
   if(stats.emptyMetrics)warnings.push(`Измерения без числовых параметров пропущены: ${stats.emptyMetrics}.`);
-  if(stats.duplicates)warnings.push(`Повторные события C/F/J исключены: ${stats.duplicates}.`);
-  if(role==='events')return {format:1,analysisVersion:JOURNAL_ANALYSIS_VERSION,role,rows:eventRows,stats,warnings};
   if(coefficientMode==='unscaled')warnings.push('Журнал 31 сформирован без коэффициентов трансформации. Мощность не сравнивается напрямую с объёмом потребления.');
   const output=[...meters.values()].map(({_signals,...meter})=>({...meter,signals:[..._signals.values()].map(({_months,...s})=>({...s,months:[..._months.values()].sort((a,b)=>a.month.localeCompare(b.month))}))}));
   return {format:1,analysisVersion:JOURNAL_ANALYSIS_VERSION,role,reportPeriod,coefficientMode,fields:[...INSTANT_FIELDS],meters:output,stats:{...stats,meters:output.length},warnings};

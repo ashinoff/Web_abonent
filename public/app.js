@@ -12,7 +12,7 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=16';
+import { listOfflineCopies } from './prepared-cache.js?v=17';
 import { createUserNotifications } from './user-notifications.js';
 import { initUserNoteEditor } from './user-note-editor.js';
 import { initAccountUI } from './account-ui.js';
@@ -64,7 +64,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=16', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=17', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();

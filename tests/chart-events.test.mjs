@@ -7,6 +7,7 @@ import { initAnalysisUI } from '../public/analysis-ui.js';
 
 const months = [{ y:2025,m:11 }, { y:2026,m:0 }, { y:2026,m:1 }];
 const event = (at, kind = 'opening', description = 'Вскрытый элемент устройства "Корпус"') => ({ serial:'TEST-001',at,kind,description,title:'Событие ПУ',code:'J46_CASE' });
+const monthlyEvent = (first,last,count=120000,overrides={}) => ({...event(first),first,last,month:first.slice(0,7),count,groupId:'private-month-group',days:[[first.slice(0,10),first,first,count-1],[last.slice(0,10),last,last,1]],examples:[{at:first,description:'Вскрытый элемент устройства "Корпус"'},{at:last,description:'Повторная регистрация'}],examplesTruncated:true,...overrides});
 const chart = (events, cases = []) => {
   const window = new Window(), host = window.document.createElement('section');
   window.document.body.append(host);
@@ -39,6 +40,38 @@ test('timeline and year comparison keep event dates attached to the actual year 
   p.$('.plot-event[data-event-year="2026"]').dispatchEvent(new p.window.KeyboardEvent('keydown',{key:' ',bubbles:true}));
   assert.match(p.$('.chart-event-details').textContent,/01\.01\.2026/);
   assert.doesNotMatch(p.$('.chart-event-details').textContent,/31\.12\.2025/);
+});
+test('monthly 46 groups keep one marker each despite repeated registrations and show actual bounded examples',()=>{
+  const first='2026-01-03T10:20:30',last='2026-01-28T23:59:59';
+  const grouped=monthlyEvent(first,last,120000,{examples:[{at:first,description:'<img src=x onerror=alert(1)> Корпус'},{at:'2026-01-14T12:00:00',description:'Пример середины'},{at:last,description:'Последняя регистрация'},{at:last,description:'Лишний четвёртый пример'}]});
+  const other=monthlyEvent('2026-01-04T00:00:00','2026-01-27T00:00:00',300,{serial:'TEST-002',groupId:'private-other-group',code:'J46_TERMINAL_COVER'});
+  const p=chart([grouped,other,event('2026-01-05T11:22:33','electrical','Измерение I=2 А')]);
+  assert.equal(p.host.querySelectorAll('.plot-event[data-monthly-group]').length,2);
+  assert.equal(p.host.querySelectorAll('.plot-event[data-event-kind="electrical"]').length,1);
+  const marker=p.$('.plot-event[data-monthly-group]');
+  assert.match(marker.getAttribute('aria-label'),/регистраций 120000/);
+  assert.match(marker.querySelector('title').textContent,/03\.01\.2026 10:20:30/);
+  assert.match(marker.querySelector('title').textContent,/28\.01\.2026 23:59:59/);
+  assert.doesNotMatch(marker.querySelector('title').textContent,/Лишний четвёртый/);
+  marker.dispatchEvent(new p.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  assert.match(p.$('.chart-event-counts').textContent,/2 месячных групп · 120300 регистраций/);
+  assert.match(p.$('.chart-event-details').textContent,/не равно числу независимых вскрытий/);
+  assert.match(p.$('.chart-event-details').textContent,/не означает непрерывную тревогу/);
+  assert.equal(p.host.querySelectorAll('.event-examples>div').length,5);
+  assert.equal(p.host.querySelectorAll('.chart-event-details img').length,0);
+  assert.doesNotMatch(p.$('.chart-event-details').textContent,/Лишний четвёртый|private-month-group|private-other-group/);
+  p.$('[data-chart-mode="yearly"]').click();
+  assert.equal(p.host.querySelectorAll('.plot-event[data-monthly-group][data-event-year="2026"]').length,2);
+  p.$('.plot-event[data-monthly-group]').dispatchEvent(new p.window.KeyboardEvent('keydown',{key:' ',bubbles:true}));
+  assert.match(p.$('.chart-event-details').textContent,/28\.01\.2026 23:59:59/);
+});
+test('out-of-period monthly group counts registrations without projecting days or mismatched months',()=>{
+  const data=indexChartEvents(months,[monthlyEvent('2025-01-03T10:20:30','2025-01-28T23:59:59',900000),monthlyEvent('2026-01-03T10:20:30','2026-01-28T23:59:59',500),monthlyEvent('2026-01-03T10:20:30','2026-01-28T23:59:59',500,{month:'2026-02'})]);
+  assert.equal(data.outsidePeriod,900000);assert.equal(data.outsideGroups,1);
+  assert.equal(data.byMonth.get(1).length,1);assert.equal(data.byMonth.has(2),false);
+  const p=chart([monthlyEvent('2025-01-03T10:20:30','2025-01-28T23:59:59',900000)]);
+  assert.equal(p.host.querySelectorAll('.plot-event').length,0);
+  assert.match(p.$('.chart-event-outside').textContent,/900000 · месячных групп 46: 1/);
 });
 test('month event lists are bounded and escape source descriptions and serials', () => {
   const events=Array.from({length:61},(_,i)=>({ ...event(`2026-01-01T00:00:${String(i%60).padStart(2,'0')}`), serial:'<svg onload="alert(1)">',description:'<img src=x onerror="alert(1)"> & комментарий' }));
@@ -113,11 +146,14 @@ test('case details retain independent evidence, missing comparison reasons, seas
 test('case details expose representative-source limits and only monthly support relevant to that period',()=>{
   const item=combination({supportingMonthlyFlags:[{code:'S3',title:'Падение другого периода',scope:'ЛС, все ТУ (контекст)'}]});
   const entry={...item,supportingMonthlyFlags:[{code:'S14',title:'Длительное снижение',scope:'ЛС, все ТУ (контекст)'}],thresholdMatches:['previous'],
-    evidence:{...item.evidence,electricalCount:100,electricalTimestampCount:25,electricalDetailsTruncated:true,eventCount:12,eventDetailsTruncated:true}};
+    evidence:{...item.evidence,electricalCount:100,electricalTimestampCount:25,electricalDetailsTruncated:true,eventCount:120000,eventGroupCount:2,eventRegistrationCountScope:'participating_month_groups',eventTimestampCount:12,eventDetailsTruncated:true,events:item.evidence.events.map(record=>({...record,timestampDetailExact:false}))}};
   const window=new Window(),host=window.document.createElement('div');host.innerHTML=journalCaseDetailHTML(item,entry);
   assert.match(host.textContent,/Показано 1 из 25 сохранённых записей/);
   assert.match(host.textContent,/полные измерения — в исходном журнале 31/);
-  assert.match(host.textContent,/Показано 1 из 12 событий/);
+  assert.match(host.textContent,/Показано 1 из 12 сохранённых фактических дат регистраций/);
+  assert.match(host.textContent,/Участвующих месячных групп: 2 · регистраций в них: 120000/);
+  assert.match(host.textContent,/не ограничено точным временным окном измерений журнала 31/);
+  assert.match(host.textContent,/этот текст не привязан к конкретной регистрации/);
   assert.match(host.textContent,/S14 · Длительное снижение · ЛС, все ТУ \(контекст\)/);
   assert.doesNotMatch(host.textContent,/Падение другого периода/);
   assert.equal(host.querySelectorAll('[data-triggered="true"]').length,1);
@@ -181,7 +217,7 @@ test('consumer UI exposes combined cases, bounded totals and independent evidenc
   }
   const cases=Array.from({length:10},(_,i)=>combination({serial:`TEST-${i}`,peerContext:{available:false,reason:'В этой ТП меньше шести сопоставимых других ЛС.'}}));
   cases[0].months=Array.from({length:5},(_,i)=>({...cases[0],months:undefined,month:`2026-0${i+1}`,value:20+i}));
-  const result={meter:{name:'Тестовый потребитель',account:'TEST-001',pointCount:1,rowCount:1,values:[100,50,null],sources:[],power:null},cls:'green',score:0,total:150,lossKwh:0,baseline:100,flags:[],journal:{events:[],cases,caseCount:25,casesTruncated:true}};
+  const result={meter:{name:'Тестовый потребитель',account:'TEST-001',pointCount:1,rowCount:1,values:[100,50,null],sources:[],power:null},cls:'green',score:0,total:150,lossKwh:0,baseline:100,flags:[],journal:{events:[],cases,caseCount:25,casesTruncated:true,eventRegistrationCount:120000,eventGroupCount:2,coverage:{instant:{loaded:false},events:{loaded:true,matchedMeters:1,totalMeters:5,matchedGroups:2,matchedRegistrations:120000,totalGroups:10,totalRegistrations:600000}}}};
   const ui=initAnalysisUI({request:async()=>({result,months,warnings:[],individual:true,scope:'Одна точка'}),isReady:()=>true,getIncoming:()=>({ready:false}),showConnection(){}});
   await ui.openConsumer('TEST-001','Тестовая точка');
   const body=window.document.querySelector('#analysis-body');
@@ -192,6 +228,9 @@ test('consumer UI exposes combined cases, bounded totals and independent evidenc
   assert.match(body.querySelector('.journal-cases').textContent,/меньше шести сопоставимых/);
   assert.match(body.querySelector('.journal-cases').textContent,/05\.01\.2026 11:22:33/);
   assert.match(body.querySelector('.journal-cases').textContent,/03\.01\.2026 10:20:30/);
+  assert.match(body.querySelector('.journal-coverage summary').textContent,/46: 2 групп \/ 120000 регистраций/);
+  assert.match(body.querySelector('.journal-source[data-state="ready"]').textContent,/По выбранным ПУ: 2 месячных групп · 120000 регистраций/);
+  assert.match(body.querySelector('.journal-source[data-state="ready"]').textContent,/В целом по РЭС: 10 групп · 600000 регистраций/);
   assert.doesNotMatch(body.querySelector('.journal-cases').textContent,/private-case-id|private-point-key|undefined|доказанное хищение|вероятность/);
   assert.match(body.querySelector('.analysis-intro').textContent,/Без выраженных признаков · 0 баллов/);
 });
