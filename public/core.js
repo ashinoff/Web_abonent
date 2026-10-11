@@ -167,8 +167,8 @@ export function notificationRecord(index, fields = {}) {
 }
 // Only these fields are needed to relate consumption to registry points.
 export function analysisRecords(records) {
-  const keys = ['account', 'point', 'pointNumber', 'pointName', 'meter', 'tp', 'power', 'name'];
-  return records.map(record => ({ fields: Object.fromEntries(keys.map(key => [key, record.fields[key] ?? ''])) }));
+  const keys = ['account', 'point', 'pointNumber', 'pointName', 'meter', 'tp', 'power', 'name', 'transformerRatio'];
+  return records.map(record => ({ fields: Object.fromEntries(keys.map(key => [key, record.fields[key] ?? ''])), address: record.address || '', file: record.file || '', sheet: record.sheet || '', row: record.row }));
 }
 export function listTPs(index) {
   return [...index.tp.values()].map(({ key, name, meters, missingMeters }) => ({ key, name, total: meters.size, missingMeters }))

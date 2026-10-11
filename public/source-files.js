@@ -1,6 +1,6 @@
 import { isExcelFile } from './source.js';
 
-const roles = { registry: 'Реестр', consumption: 'Потребление', incoming: 'Приём' };
+const roles = { registry: 'Реестр', consumption: 'Потребление', incoming: 'Приём', instant: 'Журнал 31 · Мгновенные значения', events: 'Журнал 46 · События' };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const date = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString('ru-RU') : '';
 const size = value => Number.isFinite(value) ? (value < 1048576 ? Math.max(1, Math.round(value / 1024)) + ' КБ' : (value / 1048576).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' МБ') : '';
@@ -38,11 +38,11 @@ export function initSourceFiles(root, { onRead, onRefresh }) {
       const books = items.filter(f => f.type === 'file' && isExcelFile(f.name));
       const options = `<option value="">${books.length ? 'Выберите файл' : 'Нет доступных XLS / XLSX'}</option>` + books.map(f => `<option value="${esc(f.path)}">${esc(f.name)}</option>`).join('');
       for (const role of Object.keys(roles)) {
-        const source = sources[role], card = root.querySelector(`[data-source-card="${role}"]`);
+        const source = sources[role] || { state: 'idle', expected: roles[role], message: 'Дополнительный журнал ещё не загружен.' }, card = root.querySelector(`[data-source-card="${role}"]`);
         card.dataset.state = source.state;
         card.querySelector('.source-file-name').textContent = source.file?.name || source.saved?.name || source.expected;
         card.querySelector('.source-file-meta').textContent = [source.meta, fileMeta(source.file), source.saved ? 'Выбран вручную' : 'Автоматический выбор'].filter(Boolean).join(' · ');
-        const failed = ['missing', 'error'].includes(source.state);
+        const optional = ['instant', 'events'].includes(role), failed = source.state === 'error' || !optional && source.state === 'missing';
         card.querySelector('.source-file-status').textContent = [source.saved && !source.file && source.state === 'missing' ? 'Выбранный файл больше не найден в папке.' : source.message, failed && res ? 'Выберите файл вручную или повторите чтение.' : ''].filter(Boolean).join(' ');
         const select = card.querySelector('select'), choose = card.querySelector('[data-choose-source]'), panel = card.querySelector('.manual-source');
         const value = changed ? source.file?.path || '' : select.value || source.file?.path || '';

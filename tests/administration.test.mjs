@@ -36,4 +36,9 @@ test('catalog scans discover a blocked RES without reading or downloading its co
   }});
   await service.syncAll({prepare:false});assert.deepEqual(calls,['/','/ЭС']);assert.equal(folders[0].statuses.registry.state,'blocked');
   await assert.rejects(service.fromDatabase(path+'/файл.xlsx','registry'),error=>error.status===403);assert.deepEqual(calls,['/','/ЭС']);
+  for(const role of ['instant','events']) {
+    assert.equal(folders[0].statuses[role].state,'blocked');
+    await assert.rejects(service.fromDatabase(path+'/журнал.xlsx',role),error=>error.status===403);
+  }
+  assert.deepEqual(calls,['/','/ЭС']);
 });

@@ -60,19 +60,34 @@ test('accounts, session revocation and RES cleanup use actual PostgreSQL transac
       assert.equal((await api('admin/accounts/'+user.id,{cookie:adminCookie,method:'DELETE',body:{}})).status,200);
     });
     const folder=path=>({path,name:path.split('/').at(-1),enterprisePath:'/ЭС',enterpriseName:'ЭС'}),data={format:1,role:'registry',sheets:[]};
-    await store.putFolder(source,folder(res),{registry:{state:'ready',path:file,file:'реестр.xlsx'}});
+    const journals=[{role:'instant',path:res+'/31. значения.xlsx',data:{format:1,role:'instant',rows:[]}},
+      {role:'events',path:res+'/46. события.xlsx',data:{format:1,role:'events',rows:[]}}];
+    await store.putFolder(source,folder(res),{registry:{state:'ready',path:file,file:'реестр.xlsx'},
+      ...Object.fromEntries(journals.map(item=>[item.role,{state:'ready',path:item.path,file:item.path.split('/').at(-1)}]))});
     await store.putFolder(source,folder(other),{registry:{state:'pending',path:other+'/реестр.xlsx',file:'реестр.xlsx'}});
     await store.put(source,file,'registry','old',data);await store.put(source,other+'/реестр.xlsx','registry','other',data);await store.put('unrelated-source',file,'registry','other-source',data);
+    for(const journal of journals)await store.put(source,journal.path,journal.role,'journal-old',journal.data);
     await t.test('cleanup blocks online access and rejects late writes after immediate reopening',async()=>{
       const policy=await store.assertLoadAllowed(source,file);
-      const clear=await api('admin/clear-data',{cookie:adminCookie,method:'POST',body:{resPath:res,confirm:true}});assert.equal(clear.status,200);assert.equal(clear.data.removed,1);
+      const clear=await api('admin/clear-data',{cookie:adminCookie,method:'POST',body:{resPath:res,confirm:true}});assert.equal(clear.status,200);assert.equal(clear.data.removed,3);
       assert.equal(await store.get(source,file,'registry'),null);assert.ok(await store.get(source,other+'/реестр.xlsx','registry'));assert.ok(await store.get('unrelated-source',file,'registry'));
+      for(const journal of journals){
+        assert.equal(await store.get(source,journal.path,journal.role),null);
+        const path='prepared?role='+journal.role+'&path='+encodeURIComponent(journal.path);
+        assert.equal((await api(path,{cookie:adminCookie})).status,403);
+        assert.equal((await originalFetch(base+'/api/'+path,{method:'HEAD',headers:{cookie:adminCookie}})).status,403);
+      }
       for(const path of ['directory?path=','resources?path=','download?path=','prepared?role=registry&path='])assert.equal((await api(path+encodeURIComponent(file),{cookie:adminCookie})).status,403);
       assert.equal((await originalFetch(base+'/api/prepared?role=registry&path='+encodeURIComponent(file),{method:'HEAD',headers:{cookie:adminCookie,'if-none-match':'"b2xk"'}})).status,403);
       assert.equal((await store.listAdminFolders(source)).find(item=>item.res_path===res).load_blocked,true);
       await store.setLoadPolicy(source,res,false,'test');
       await assert.rejects(store.put(source,file,'registry','late',data,policy),error=>error.code==='res_changed');
       await assert.rejects(store.markFile(source,file,'registry','ready',new Date(),policy),error=>error.code==='res_changed');
+      for(const journal of journals){
+        await assert.rejects(store.put(source,journal.path,journal.role,'late',journal.data,policy),error=>error.code==='res_changed');
+        await assert.rejects(store.markFile(source,journal.path,journal.role,'ready',new Date(),policy),error=>error.code==='res_changed');
+        assert.equal(await store.get(source,journal.path,journal.role),null);
+      }
       assert.equal(await store.putFolder(source,folder(res),{registry:{state:'ready'}},policy),false);
       const repeated=createPreparedStore(env,{pool});assert.equal((await repeated.getLoadPolicy(source,file)).blocked,false);
       await store.setLoadPolicy(source,res,true,'test');assert.equal((await repeated.getLoadPolicy(source,file)).blocked,true);

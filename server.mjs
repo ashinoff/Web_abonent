@@ -13,6 +13,7 @@ import { createNotificationsHandler } from './user-notifications.mjs';
 import { createAccessControl,createAdminHandler } from './access-control.mjs';
 import { resScope } from './admin-store.mjs';
 import { superAdminConfig } from './accounts.mjs';
+import { sourceRoleKeys } from './public/source.js';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -183,7 +184,7 @@ export function createServer(options = {}) {
         if (!prepared) { sendJson(res, 503, { error: 'Серверная подготовка ещё не подключена.' }); return; }
         const path = url.searchParams.get('path') || '';
         const role = url.searchParams.get('role') || '';
-        if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !['registry','consumption','incoming'].includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
+        if (!path.startsWith('/') || path.includes('\0') || path.split('/').includes('..') || path.length > 4096 || !sourceRoleKeys.includes(role) || !/\.xlsx?$/i.test(path)) { sendJson(res, 400, { error: 'Некорректный запрос.' }); return; }
         try {
           const policy=await store.assertLoadAllowed?.(key,path);
           if (req.method === 'HEAD') {

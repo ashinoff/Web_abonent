@@ -1,5 +1,13 @@
-export const sourceRoles = [['registry', 'Реестр'], ['consumption', 'ПО'], ['incoming', 'Приём']];
+import { sourceRoles } from './source.js';
+export { sourceRoles } from './source.js';
 const name = path => path.split('/').filter(Boolean).at(-1) || path;
+
+// Journal files supplement the three existing sources. Their absence must not
+// make an unchanged RES look less complete in the loading map.
+export function sourceProgress(folder) {
+  const selected = sourceRoles.filter(([role]) => !['instant', 'events'].includes(role) || folder.statuses?.[role]?.path || folder.statuses?.[role]?.file);
+  return { ready: selected.filter(([role]) => folder.statuses?.[role]?.state === 'ready').length, total: selected.length };
+}
 
 export function folderSources(folder) {
   if(folder.load_blocked)return [];

@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 import * as XLSX from '@e965/xlsx';
 import { parseMatrix, buildIndex, search, detectLayout, restoreNumericIdentifiers, listTPs, metersByTP, analysisRecords } from '../public/core.js';
 import { demo } from '../public/demo.js';
-test('analysis registry transfer excludes addresses, phones, notes and unrelated fields',()=>{
-  const source=parseMatrix([['ЛС','Номер ПУ','ТУ','Телефон','Примечание'],['001','0002','Точка','12345','Длинное примечание']]);
+test('analysis registry transfer retains report address and provenance while excluding phones, notes and unrelated fields',()=>{
+  const source=parseMatrix([['ЛС','Номер ПУ','ТУ','Адрес','Телефон','Примечание','Стороннее поле'],['001','0002','Точка','Город Тестовый, улица Учебная, 1','12345','Длинное примечание','Лишнее значение']],{file:'Тестовый реестр.xlsx',sheet:'Учебный лист'});
   const compact=analysisRecords(source.records);
   assert.equal(compact[0].fields.account,'001');assert.equal(compact[0].fields.meter,'0002');assert.equal(compact[0].fields.pointName,'Точка');
-  assert.equal('note' in compact[0].fields,false);assert.equal('phone' in compact[0].fields,false);assert.equal('values' in compact[0],false);
+  assert.equal(compact[0].address,source.records[0].address);assert.equal(compact[0].address,'Город Тестовый, улица Учебная, 1');
+  for(const key of ['file','sheet','row'])assert.equal(compact[0][key],source.records[0][key]);
+  assert.equal(compact[0].file,'Тестовый реестр.xlsx');assert.equal(compact[0].sheet,'Учебный лист');assert.equal(compact[0].row,2);
+  assert.deepEqual(Object.keys(compact[0]).sort(),['address','fields','file','row','sheet']);
+  assert.deepEqual(Object.keys(compact[0].fields).sort(),['account','meter','name','point','pointName','pointNumber','power','tp','transformerRatio']);
+  for(const key of ['note','phone','address','Стороннее поле'])assert.equal(key in compact[0].fields,false);
+  assert.equal('values' in compact[0],false);assert.equal(JSON.stringify(compact).includes('Лишнее значение'),false);
   assert.equal(source.records[0].fields.note,'Длинное примечание');
 });
 

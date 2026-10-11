@@ -1,5 +1,5 @@
 import { listOfflineCopies, downloadOfflineCopy, deleteOfflineCopy } from './prepared-cache.js';
-import { sourceRoles as roles, folderSources, offlineCopyState, formatBytes, withLocalFolders, rememberMapDirectories, rememberOfflineFiles } from './offline-copies.js';
+import { sourceRoles as roles, sourceProgress, folderSources, offlineCopyState, formatBytes, withLocalFolders, rememberMapDirectories, rememberOfflineFiles } from './offline-copies.js';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -27,12 +27,12 @@ export function initLoadMap(root, { getFiles = folderSources, beforeDelete = () 
       const hasFiles = group.folders.some(folder => Object.values(folder.statuses || {}).some(item => item?.file || (item?.state && item.state !== 'missing')));
       return `<details class="load-map-enterprise" data-enterprise="${esc(group.path)}" ${open.has(group.path) ? 'open' : ''}><summary><i class="load-map-lamp" data-state="${hasFiles ? 'present' : 'empty'}" aria-hidden="true"></i><strong>${esc(group.name)}</strong><small>${group.folders.length} РЭС · ${hasFiles ? 'есть файлы' : 'нет файлов'}</small><svg class="load-map-chevron" aria-hidden="true"><use href="#i-chevron"/></svg></summary><div class="load-map-res-list">${group.folders.map(folder => {
         const statuses = folder.statuses || {}, files = getFiles(folder), copy = copies.find(item => item.resPath === folder.res_path);
-        const ready = roles.filter(([key]) => statuses[key]?.state === 'ready').length;
+        const progress = sourceProgress(folder);
         const state = offlineCopyState(copy, files), active = job?.source === source && job.resPath === folder.res_path;
         const controls = (action, label, disabled = false, extra = '') => `<button type="button" class="offline-action ${extra}" data-offline-action="${action}" data-res-path="${esc(folder.res_path)}" ${disabled ? 'disabled' : ''}>${label}</button>`;
         const status = messages.get(folder.res_path);
         const clearButton=canClearNotifications()?`<button type="button" class="offline-action offline-delete" data-clear-notifications="${esc(folder.res_path)}" ${!navigator.onLine || folder.localOnly || folder.load_blocked || clearing.has(folder.res_path)?'disabled':''}><svg aria-hidden="true"><use href="#i-trash"/></svg>Очистить уведомления</button>`:'';
-        return `<article class="load-map-res"><div class="load-map-res-title"><strong>${esc(folder.res_name)}</strong><small>${folder.localOnly ? 'Только на телефоне' : ready + ' из 3 готово'}</small></div><div class="load-map-statuses">${roles.map(([key,label]) => {
+        return `<article class="load-map-res"><div class="load-map-res-title"><strong>${esc(folder.res_name)}</strong><small>${folder.localOnly ? 'Только на телефоне' : progress.ready + ' из ' + progress.total + ' готово'}</small></div><div class="load-map-statuses">${roles.map(([key,label]) => {
           const item = statuses[key] || { state:'missing' }, state = folder.load_blocked?'blocked':states[item.state] ? item.state : 'error';
           return `<span class="load-map-status" data-state="${state}" title="${esc(item.file || label)}"><i aria-hidden="true"></i>${label}: ${states[state]}</span>`;
         }).join('')}</div><small class="load-map-date">Проверено в базе: ${esc(date(folder.checked_at))}</small><div class="offline-copy" data-state="${state}"><span>На телефоне: <strong>${copyLabels[state]}</strong>${copy ? ' · ' + formatBytes(copy.bytes) : ''}</span>${copy ? '<small>' + esc(date(copy.savedAt)) + '</small>' : ''}</div><div class="offline-actions">${active ? controls('stop', 'Остановить', false, 'offline-stop') : controls(copy ? 'update' : 'download', copy ? 'Обновить копию' : 'Скачать на телефон', !navigator.onLine || !files.length)}${controls('delete', 'Удалить с телефона', !copy, 'offline-delete')}${clearButton}</div><p class="offline-message" role="status" ${status ? '' : 'hidden'} data-kind="${esc(status?.kind || '')}">${esc(status?.text || '')}</p></article>`;

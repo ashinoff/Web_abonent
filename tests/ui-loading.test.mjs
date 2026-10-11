@@ -18,10 +18,18 @@ const packs = {
   registry: prepareWorkbook(excel([['Номер счетчика','ЛС','Наименование договора','ТУ','ТП','Адрес'],['00123','0001','Вымышленный абонент','Точка 1','ТП-1','Тестовая улица, 1']]), 'registry', 'Расширенный список.xlsx'),
   consumption: prepareWorkbook(excel([['Полезный отпуск по всем точкам учета за Январь 2022 г. - Февраль 2022 г.'],['ЛС/Номер договора','ТУ','ТП','Январь 2022','Февраль 2022'],['0001','Точка 1','ТП-1',10,20]]), 'consumption', 'ПО.xlsx'),
   incoming: { format:1, role:'incoming', sheets:1 },
+  instant: prepareWorkbook(excel([
+    ['Серийный', 'Время', 'Активная мощность, фаза 1', 'Напряжение на фазе 1', 'Ток в фазе 1'],
+    ['00123', '15.01.2022 12:00:00', -1.2, 230, 6],
+  ]), 'instant', '31. Мгновенные значения.xlsx'),
+  events: prepareWorkbook(excel([
+    ['', '', 'Серийный', '', '', 'Дата и время', '', '', '', 'Дополнительная информация'],
+    ['', '', '00123', '', '', '16.01.2022 12:00:00', '', '', '', 'Вскрытый элемент устройства "Клеммная крышка"'],
+  ]), 'events', '46. События по точкам учёта.xlsx'),
 };
 const source = 'https://disk.yandex.ru/d/UiLoadingTest';
 const folders = [['ЭС А','Долгая РЭС'],['ЭС А','Готовая РЭС'],['ЭС Б','Другая РЭС']].map(([enterprise_name,res_name]) => ({ enterprise_name, enterprise_path:'/'+enterprise_name, res_name, res_path:'/'+enterprise_name+'/'+res_name,
-  statuses:Object.fromEntries([['registry','Расширенный список.xlsx'],['consumption','ПО.xlsx'],['incoming','прием.xlsx']].map(([role,file]) => [role,{ state:'ready',file,path:'/'+enterprise_name+'/'+res_name+'/'+file,size:9*1048576 }])) }));
+  statuses:Object.fromEntries([['registry','Расширенный список.xlsx'],['consumption','ПО.xlsx'],['incoming','прием.xlsx'], ...(res_name === 'Другая РЭС' ? [['instant', '31. Мгновенные значения.xlsx'], ['events', '46. События по точкам учёта.xlsx']] : [])].map(([role,file]) => [role,{ state:'ready',file,path:'/'+enterprise_name+'/'+res_name+'/'+file,size:9*1048576 }])) }));
 async function until(predicate, description) {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) { if (predicate()) return; await delay(5); }
@@ -44,24 +52,55 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     requestAnimationFrame:page.requestAnimationFrame.bind(page), cancelAnimationFrame:page.cancelAnimationFrame.bind(page), matchMedia:()=>({ matches:true }) }))
     Object.defineProperty(globalThis,key,{ value, configurable:true, writable:true });
   const $ = selector => page.document.querySelector(selector);
-  const workers = [];
+  const workers = [], journalLoads = [], exports = [], downloads = [];
+  // HappyDOM follows download links as navigation; browsers save these instead.
+  t.mock.method(page.HTMLAnchorElement.prototype,'click',function () {
+    assert.match(this.download,/^Аномалии_.*\.xlsx$/);
+    downloads.push({name:this.download,href:this.href});
+  });
   class WorkbookWorker {
     constructor() { this.controller = new AbortController(); this.closed = false; workers.push(this); }
-    terminate() { this.closed = true; this.controller.abort(); }
+    terminate() { this.closed = true; this.controller.abort(); for (const controller of Object.values(this.journalControllers || {})) controller.abort(); }
     async postMessage({ id,action,payload }) {
       this.action = action;
       try {
         let result;
-        if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-          const { data:pack,...info } = await fetchPrepared({ ...payload,signal:this.controller.signal });
+        if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming','loadPreparedJournal'].includes(action)) {
+          let signal = this.controller.signal;
+          if (action === 'loadPreparedJournal') {
+            this.journalControllers ||= {}; this.journalControllers[payload.role] = new AbortController();
+            signal = this.journalControllers[payload.role].signal;
+          }
+          const { data:pack,...info } = await fetchPrepared({ ...payload,signal });
           if (this.closed) return;
           if (action === 'loadPreparedRegistry') {
             const sheets = unpackRegistry(pack); this.index = buildIndex(sheets);
             result = { ...info,count:this.index.records.length,notesCount:0,skipped:[],sheets:sheets.map(({sheet,layout,sample})=>({sheet,layout,sample})) };
           } else if (action === 'loadPreparedMonthly') {
-            this.analysis = createAnalysisService(indexMonthly(unpackMonthly(pack)),payload.records);
+            this.monthlyModel = indexMonthly(unpackMonthly(pack)); this.monthlyRecords = payload.records;
+            this.analysis = createAnalysisService(this.monthlyModel,this.monthlyRecords,this.journals);
             result = { ...this.analysis.summary,...info };
+          } else if (action === 'loadPreparedJournal') {
+            this.journals ||= {}; this.journals[payload.role] = pack;
+            if (this.monthlyModel) this.analysis = createAnalysisService(this.monthlyModel,this.monthlyRecords,this.journals);
+            journalLoads.push({ role:payload.role,offlineOnly:payload.offlineOnly });
+            result = { role:payload.role,stats:pack.stats,warnings:pack.warnings,meterCount:pack.meters?.length ?? new Set(pack.rows.map(row => row[0])).size,...info };
           } else result = { sheets:pack.sheets,...info };
+        } else if (action === 'clearAnalysisJournal') {
+          this.journals ||= {}; this.journals[payload.role] = null;
+          if (this.monthlyModel) this.analysis = createAnalysisService(this.monthlyModel,this.monthlyRecords,this.journals);
+          result = true;
+        } else if (action === 'cancelJournalLoads') {
+          this.journals ||= {};
+          for (const role of payload.roles) { this.journalControllers?.[role]?.abort(); this.journals[role] = null; }
+          if (this.monthlyModel) this.analysis = createAnalysisService(this.monthlyModel,this.monthlyRecords,this.journals);
+          return;
+        } else if (action === 'exportAnomalies') {
+          assert.ok(this.analysis, 'export uses the loaded analysis worker');
+          exports.push(payload);
+          const { buildAnomalyWorkbook } = await import('../public/anomaly-report.js');
+          const report = this.analysis.report(payload.settings);
+          result = { buffer:buildAnomalyWorkbook(report,XLSX,payload.context),count:report.rows.length };
         } else if (action === 'analysisRecords') result = analysisRecords(this.index.records);
         else if (action === 'search') result = search(this.index,payload);
         else if (action === 'analysisConsumer') result = this.analysis.consumer(payload.account,payload.settings,payload.tp,payload.point);
@@ -72,7 +111,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
   }
   globalThis.Worker = WorkbookWorker;
   const slowRegistry = deferred(), registryStarted = deferred(), slowMonthly = deferred(), monthlyStarted = deferred();
-  let folderDelay = null, failUpdate = false, revision = '1', slowIncoming = null, blockNetwork = false;
+  let folderDelay = null, failUpdate = false, revision = '1', slowIncoming = null, slowEvents = null, eventsStarted = null, blockNetwork = false;
   const networkCalls = [];
   t.mock.method(globalThis,'fetch',async (input, opts = {}) => {
     const url = new URL(input), path = url.searchParams.get('path') || '/';
@@ -94,11 +133,12 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     if (path.includes('/Долгая РЭС/') && role === 'registry') { registryStarted.resolve(); await slowRegistry.promise; }
     if (path.includes('/Готовая РЭС/') && role === 'consumption') { monthlyStarted.resolve(); await slowMonthly.promise; }
     if (slowIncoming && role === 'incoming') await slowIncoming.promise;
+    if (slowEvents && role === 'events') { eventsStarted.resolve(); await slowEvents.promise; }
     opts.signal?.throwIfAborted();
     if (failUpdate && role === 'consumption') return Response.json({ error:'Тестовый сбой ПО' },{status:502});
     return Response.json(packs[role],{headers:{'X-Prepared-Revision':revision,'X-Prepared-Stale':'0'}});
   });
-  t.after(async () => { slowRegistry.resolve(); slowMonthly.resolve(); folderDelay?.resolve(); slowIncoming?.resolve(); workers.forEach(worker => worker.terminate()); for (const timer of timers) clearTimer(timer); await page.happyDOM.close(); });
+  t.after(async () => { slowRegistry.resolve(); slowMonthly.resolve(); folderDelay?.resolve(); slowIncoming?.resolve(); slowEvents?.resolve(); workers.forEach(worker => worker.terminate()); for (const timer of timers) clearTimer(timer); await page.happyDOM.close(); });
   await import('../public/app.js?ui-loading');
   await until(() => $('#folder-list').querySelectorAll('[data-folder]').length === 2,'initial enterprise choices');
   const enterprise = name => [...$('#folder-list').querySelectorAll('[data-folder]')].find(item => item.textContent.includes(name));
@@ -165,6 +205,43 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     $('#search-input').value = '00123'; $('#search-form').dispatchEvent(new page.Event('submit',{bubbles:true,cancelable:true}));
     await until(() => $('#results').textContent.includes('Вымышленный абонент'),'search after incoming stop');
   });
+  const activeAnalysis = () => workers.find(worker => !worker.closed && worker.analysis);
+  const journalsReady = () => ['instant','events'].every(role => $(`[data-source-card="${role}"]`).dataset.state === 'ready') && $('#load-stop').hidden;
+  await t.test('manual PO loading reconnects selected RES journals and enables the report with specific meter flags', async () => {
+    await delay(700); // Settings dismissal briefly suppresses subsequent dialog clicks.
+    $('#settings-open').click(); $('[data-load-source="consumption"]').click();
+    await until(journalsReady,'selected RES journals after manual PO load');
+    assert.deepEqual(journalLoads.slice(-2).map(item => item.role),['instant','events']);
+    assert.equal($('#anomaly-export').dataset.state,'on'); assert.equal($('#anomaly-export').disabled,false);
+    const flags = activeAnalysis().analysis.consumer('0001').result.flags;
+    assert.ok(flags.some(flag => flag.code === 'J31_REVERSE'), 'journal 31 raw package feeds electrical flags');
+    assert.ok(flags.some(flag => flag.code === 'J46_TERMINAL_COVER'), 'journal 46 raw package feeds event flags');
+    const previousWorker = activeAnalysis(), before = journalLoads.length;
+    $('[data-load-source="consumption"]').click();
+    await until(() => journalsReady() && journalLoads.length === before + 2,'journals retained after repeated manual PO reload');
+    assert.notEqual(activeAnalysis(),previousWorker);
+    assert.ok(activeAnalysis().analysis.consumer('0001').result.flags.some(flag => flag.code === 'J46_TERMINAL_COVER'));
+    slowEvents = deferred(); eventsStarted = deferred();
+    $('[data-load-source="events"]').click(); await eventsStarted.promise;
+    const monthlyBeforeStop = activeAnalysis();
+    $('#load-stop').click();
+    assert.equal($('#consumption-indicator').dataset.state,'on'); assert.equal($('#contour-open').disabled,false);
+    assert.equal(activeAnalysis(),monthlyBeforeStop,'stopping an auxiliary journal retains ready consumption');
+    assert.equal($('[data-source-card="events"]').dataset.state,'error');
+    slowEvents.resolve(); await delay(20); slowEvents = null;
+    assert.equal($('[data-source-card="events"]').dataset.state,'error','late cancelled journal cannot become ready');
+    assert.ok(activeAnalysis().analysis.consumer('0001').result.flags.some(flag => flag.code === 'J31_REVERSE'),'the completed journal remains available after cancelling the other journal');
+    assert.equal(activeAnalysis().analysis.consumer('0001').result.flags.some(flag => flag.code === 'J46_TERMINAL_COVER'),false);
+    $('[data-load-source="events"]').click(); await until(journalsReady,'journal retry after cancellation');
+    $('#anomaly-export').click();
+    await until(() => exports.length === 1 && !$('#anomaly-export').disabled,'online report export');
+    assert.equal(exports[0].context.res.path,'/ЭС Б/Другая РЭС');
+    assert.equal(exports[0].context.sourceMode,'online');
+    assert.equal(exports[0].context.journalStates.instant.state,'ready');
+    assert.equal(exports[0].context.journalStates.events.state,'ready');
+    assert.match(downloads[0].name,/Аномалии_Другая РЭС_/);
+    $('#settings-dialog .close-dialog').click();
+  });
   await t.test('offline shortcut lists only saved RES and opens registry, PO and incoming without requests even online', async () => {
     const beforeCopies = await listOfflineCopies(source), beforeRequests = networkCalls.length;
     blockNetwork = true;
@@ -176,11 +253,24 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
       assert.match(choice.textContent, /ЭС Б/); assert.match(choice.textContent, /Реестр · ПО · Приём/);
       choice.click();
       await until(() => $('#incoming-indicator').dataset.state === 'on' && $('#offline-readiness').dataset.ready === 'true','local-only registry, consumption and incoming');
+      await until(journalsReady,'local-only additional journals');
       assert.equal(nav.onLine, true); assert.equal($('#offline-dialog').open, false);
       assert.equal($('#district-label').textContent, 'ЭС Б'); assert.equal($('#res-label').textContent, 'Другая РЭС');
       assert.equal($('#registry-indicator').dataset.state, 'on'); assert.equal($('#consumption-indicator').dataset.state, 'on');
       $('#search-input').value = '00123'; $('#search-form').dispatchEvent(new page.Event('submit',{bubbles:true,cancelable:true}));
       await until(() => $('#results').textContent.includes('Вымышленный абонент'),'search from offline choice');
+      assert.equal($('#anomaly-export').dataset.state,'on');
+      assert.deepEqual(journalLoads.slice(-2),[{role:'instant',offlineOnly:true},{role:'events',offlineOnly:true}]);
+      assert.ok(activeAnalysis().analysis.consumer('0001').result.flags.some(flag => flag.code === 'J46_TERMINAL_COVER'));
+      $('#anomaly-export').click();
+      await until(() => exports.length === 2 && !$('#anomaly-export').disabled,'report from selected offline copy');
+      assert.equal(exports[1].context.sourceMode,'offline');
+      assert.equal(downloads.length,2);
+      await delay(700);
+      $('#settings-open').click(); $('[data-load-source="consumption"]').click();
+      const beforeJournalLoads = journalLoads.length;
+      await until(() => journalsReady() && journalLoads.length === beforeJournalLoads + 2,'manual PO reload keeps explicit offline mode for journals');
+      $('#settings-dialog .close-dialog').click();
       assert.equal(networkCalls.length, beforeRequests);
       assert.deepEqual(await listOfflineCopies(source), beforeCopies);
     } finally { blockNetwork = false; }

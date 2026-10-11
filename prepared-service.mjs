@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findSource } from './public/source.js';
+import { findSource, sourceRoleKeys } from './public/source.js';
 import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
@@ -256,14 +256,14 @@ export function createPreparedService({ source, store, yandex }) {
           if(policy?.blocked){
             const old=previousFolders.get(res.path)||{};
             await store.putFolder?.(source,{path:res.path,name:res.name,enterprisePath:enterprise.path,enterpriseName:enterprise.name},
-              Object.fromEntries(['registry','consumption','incoming'].map(role=>[role,{...old[role],state:'blocked'}])),policy);
+              Object.fromEntries(sourceRoleKeys.map(role=>[role,{...old[role],state:'blocked'}])),policy);
             seen.push(res.path);continue;
           }
           let files;
           try { files = await list(res.path); }
           catch (error) { partialError ||= error;await report(res.path,'catalog',error); console.warn(`Каталог ${res.path}: ${error.message}`); continue; }
           const statuses = {};
-          for (const role of ['registry','consumption','incoming']) {
+          for (const role of sourceRoleKeys) {
             const file = findSource(files, role);
             if (!file) { statuses[role] = { state: 'missing' }; continue; }
             if (!prepare) {
@@ -300,7 +300,7 @@ export function createPreparedService({ source, store, yandex }) {
       for (const folder of folders) {
         if(folder.load_blocked||(await store.getLoadPolicy?.(source,folder.res_path))?.blocked)continue;
         const policy=await store.getLoadPolicy?.(source,folder.res_path);
-        for (const role of ['registry', 'consumption', 'incoming']) {
+        for (const role of sourceRoleKeys) {
           const status = folder.statuses?.[role];
           if (status?.state !== 'pending' || !status.path) continue;
           const statuses = { ...folder.statuses };

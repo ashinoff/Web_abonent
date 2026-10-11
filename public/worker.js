@@ -2,12 +2,65 @@
 const core = import('./core.js');
 let sourceSheets = [], sheets = [], index = null, analysisService = null, monthlyModel = null;
 let xlsxLoaded = false;
+let journalPacks = { instant: null, events: null }, monthlyRecords = [];
+let journalGeneration = 0;
+const journalControllers = new Map();
+async function rebuildAnalysis() {
+  if (!monthlyModel) return;
+  const { createAnalysisService } = await import('./analysis-service.js');
+  analysisService = createAnalysisService(monthlyModel, monthlyRecords, journalPacks);
+}
+function journalSummary(pack) {
+  return { role: pack.role, stats: pack.stats, warnings: pack.warnings || [], meterCount: pack.meters?.length ?? new Set(pack.rows?.map(row => row[0])).size, reportPeriod: pack.reportPeriod, coefficientMode: pack.coefficientMode };
+}
 function ensureXLSX() { if (!xlsxLoaded) { importScripts('./vendor/xlsx.full.min.js'); xlsxLoaded = true; } }
 self.onmessage = async ({ data }) => {
   const { id, action, payload } = data;
   try {
+    if (action === 'cancelJournalLoads') {
+      journalGeneration++;
+      for (const controller of journalControllers.values()) controller.abort();
+      for (const role of payload.roles || []) if (['instant', 'events'].includes(role)) journalPacks[role] = null;
+      await rebuildAnalysis(); self.postMessage({ id, result: true }); return;
+    }
+    if (action === 'loadPreparedJournal' || action === 'loadJournal') {
+      if (!['instant', 'events'].includes(payload.role)) throw new Error('Неизвестный журнал.');
+      let pack, cacheInfo = {};
+      const generation = journalGeneration, controller = new AbortController();
+      journalControllers.set(id, controller);
+      try {
+      if (action === 'loadPreparedJournal') {
+        const { fetchPrepared } = await import('./prepared-cache.js?v=15');
+        ({ data: pack, ...cacheInfo } = await fetchPrepared({ ...payload, signal: controller.signal }));
+      } else {
+        ensureXLSX();
+        const { readJournalWorkbook } = await import('./journals.js');
+        pack = readJournalWorkbook(payload.buffer, XLSX, payload.role);
+        payload.buffer = null;
+      }
+      controller.signal.throwIfAborted();
+      if (generation !== journalGeneration) throw new Error('Чтение журнала отменено.');
+      if (pack?.format !== 1 || pack.role !== payload.role) throw new Error('Неверный пакет журнала.');
+      journalPacks[payload.role] = pack;
+      await rebuildAnalysis();
+      self.postMessage({ id, result: { ...journalSummary(pack), ...cacheInfo } }); return;
+      } finally { journalControllers.delete(id); }
+    }
+    if (action === 'clearAnalysisJournal') {
+      if (['instant', 'events'].includes(payload.role)) journalPacks[payload.role] = null;
+      await rebuildAnalysis(); self.postMessage({ id, result: true }); return;
+    }
+    if (action === 'exportAnomalies') {
+      if (!analysisService) throw new Error('Файл потребления не загружен.');
+      ensureXLSX();
+      const { buildAnomalyWorkbook } = await import('./anomaly-report.js');
+      const report = analysisService.report(payload.settings);
+      const output = buildAnomalyWorkbook(report, XLSX, payload.context);
+      const buffer = output instanceof ArrayBuffer ? output : output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength);
+      self.postMessage({ id, result: { buffer, count: report.rows.length } }, [buffer]); return;
+    }
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=13');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=15');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');
@@ -21,7 +74,8 @@ self.onmessage = async ({ data }) => {
         const { indexMonthly } = await import('./monthly.js');
         const { createAnalysisService } = await import('./analysis-service.js');
         analysisService = null; monthlyModel = indexMonthly(unpackMonthly(pack));
-        analysisService = createAnalysisService(monthlyModel, payload.records);
+        monthlyRecords = payload.records || [];
+        analysisService = createAnalysisService(monthlyModel, monthlyRecords, journalPacks);
         self.postMessage({ id, result: { ...analysisService.summary, ...cacheInfo } }); return;
       }
       if (pack.role !== 'incoming') throw new Error('Неверный пакет приёма.');
@@ -40,11 +94,13 @@ self.onmessage = async ({ data }) => {
       const parsed = action === 'demoMonthly' ? payload.parsed : readMonthlyWorkbook(payload.buffer, XLSX);
       payload.buffer = null;
       monthlyModel = indexMonthly(parsed);
-      analysisService = createAnalysisService(monthlyModel, payload.records);
+      monthlyRecords = payload.records || [];
+      analysisService = createAnalysisService(monthlyModel, monthlyRecords, journalPacks);
       self.postMessage({ id, result: analysisService.summary }); return;
     }
     if (action === 'updateAnalysisRegistry') {
-      if (monthlyModel) { const { createAnalysisService } = await import('./analysis-service.js'); analysisService = createAnalysisService(monthlyModel, payload.records); }
+      monthlyRecords = payload.records || [];
+      await rebuildAnalysis();
       self.postMessage({ id, result: true }); return;
     }
     if (['analysisConsumer', 'analysisTP', 'analysisTPs'].includes(action)) {

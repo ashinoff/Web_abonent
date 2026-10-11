@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {findRegistry,findConsumption,findIncoming,isConsumptionFile,isIncomingFile,isExcelFile,findSource} from '../public/source.js';
+import {findRegistry,findConsumption,findIncoming,findInstant,findEvents,isConsumptionFile,isIncomingFile,isInstantFile,isEventsFile,isExcelFile,findSource} from '../public/source.js';
 test('fixed XLS and XLSX sources select newest, using XLSX on ties',()=>{
   const xls={type:'file',name:'Расширенный список.xls',modified:'2026-09-01T00:00:00Z'},xlsx={...xls,name:'Расширенный список.xlsx'}, newer={...xls,modified:'2026-09-30T00:00:00Z'};
   assert.equal(findRegistry([xls,xlsx]),xlsx);assert.equal(findRegistry([xlsx,newer]),newer);
@@ -31,4 +31,18 @@ test('registry, monthly and incoming books have independent exact names',()=>{
   assert.equal(findRegistry(books),books[0]);assert.equal(findConsumption(books),books[1]);assert.equal(findIncoming(books),books[2]);
   assert.equal(isConsumptionFile('ПО ПО МЕСЯЧНО.XLSX'),true);assert.equal(isIncomingFile('ПРИЁМ.xls'),true);
   assert.equal(findConsumption([books[0],books[3]]),null);assert.equal(findIncoming([{type:'dir',name:'прием.xls'}]),null);
+});
+
+test('optional journals recognise export numbers and titles while selecting one latest file',()=>{
+  for (const name of ['31. журнал.xlsx','31 мгновенные значения.XLS','31_2026-10-11.xlsx','31-замеры.xls','31.xlsx','Мгновенные значения.xlsx','мгновенные значения (1).XLS']) assert.equal(isInstantFile(name),true,name);
+  for (const name of ['46. События.xlsx','46 события.XLS','46_2026-10-11.xlsx','46-журнал.xls','46.xlsx','События по точкам учёта.xlsx','СОБЫТИЯ ПО ТОЧКАМ УЧЕТА (1).XLS']) assert.equal(isEventsFile(name),true,name);
+  for (const name of ['310. данные.xlsx','31.xlsm','~$31. журнал.xlsx','46. журнал.xlsx','ПО.xlsx']) assert.equal(isInstantFile(name),false,name);
+  for (const name of ['460. данные.xlsx','46.xlsm','~$46. журнал.xlsx','31. журнал.xlsx','ПО.xlsx']) assert.equal(isEventsFile(name),false,name);
+  const old={type:'file',name:'31. прошлый.xlsx',path:'/ЭС/РЭС/31. прошлый.xlsx',modified:'2026-10-01'}, recent={...old,name:'Мгновенные значения.xls',path:'/ЭС/РЭС/Мгновенные значения.xls',modified:'2026-10-11'}, tie={...recent,name:'31. новый.xlsx',path:'/ЭС/РЭС/31. новый.xlsx'};
+  assert.equal(findInstant([old,recent]),recent); assert.equal(findInstant([old,recent,tie]),tie);
+  const event={...recent,name:'46. события.xlsx',path:'/ЭС/РЭС/46. события.xlsx'};
+  assert.equal(findEvents([old,event]),event);assert.equal(findSource([old,event],'events'),event);
+  assert.equal(findSource([old,event],'instant',{instant:{path:event.path}}),event);
+  assert.equal(findSource([old],'events',{events:{path:event.path}}),null);
+  assert.equal(findEvents([{...event,type:'dir'}]),null);
 });

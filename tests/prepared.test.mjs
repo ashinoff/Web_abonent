@@ -242,3 +242,46 @@ test('a manually chosen snapshot refreshes before returning its old ETag', async
   assert.notEqual(result.revision,'old');
   assert.equal(downloads,1);
 });
+
+test('catalog records optional journal roles without preparing or downloading them',async()=>{
+  const resPath='/ЭС/РЭС',folders=new Map(),calls=[];
+  const files=[{type:'file',name:'31. значения.xlsx',path:resPath+'/31. значения.xlsx',size:1024,modified:'2026-10-11'},
+    {type:'file',name:'46. события.xlsx',path:resPath+'/46. события.xlsx',size:2048,modified:'2026-10-11'}];
+  const tree={'/':[{type:'dir',name:'ЭС',path:'/ЭС'}],'/ЭС':[{type:'dir',name:'РЭС',path:resPath}],[resPath]:files};
+  const service=createPreparedService({source:'https://disk.yandex.ru/d/OptionalJournals',store:{
+    listFolders:async()=>[...folders.values()],putFolder:async(_,folder,statuses)=>folders.set(folder.path,{res_path:folder.path,statuses}),
+  },yandex:async url=>{
+    assert.equal(url.pathname.endsWith('/download'),false);
+    const path=url.searchParams.get('path');calls.push(path);
+    return Response.json({type:'dir',_embedded:{items:tree[path]||[],total:(tree[path]||[]).length}});
+  }});
+  await service.syncAll({prepare:false});
+  assert.deepEqual(calls,['/','/ЭС',resPath]);
+  const {statuses}=folders.get(resPath);
+  assert.equal(statuses.instant.state,'pending');assert.equal(statuses.instant.path,files[0].path);
+  assert.equal(statuses.events.state,'pending');assert.equal(statuses.events.path,files[1].path);
+  assert.equal(statuses.registry.state,'missing');assert.equal(statuses.consumption.state,'missing');
+});
+
+test('prepared API serves cached journals and validates blocks before any snapshot access',async()=>{
+  let blocked=false,reads=0,policyChecks=0;
+  const preparedStore={
+    assertLoadAllowed:async()=>{policyChecks++;if(blocked)throw Object.assign(new Error('Загрузка закрыта.'),{status:403,code:'res_blocked'});return{generation:'0',globalGeneration:'0'};},
+    get:async(_,path,role)=>{reads++;return{revision:'journal-test',data:{format:1,role,rows:[]}};},
+  };
+  const server=createServer({env:{YANDEX_PUBLIC_URL:'https://disk.yandex.ru/d/CachedJournals'},preparedStore});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  try {
+    const base=`http://127.0.0.1:${server.address().port}`;
+    for(const role of ['instant','events']) {
+      const url=base+'/api/prepared?path='+encodeURIComponent('/ЭС/РЭС/журнал.xlsx')+'&role='+role;
+      const response=await fetch(url);assert.equal(response.status,200);assert.equal((await response.json()).role,role);
+      assert.equal((await fetch(url,{method:'HEAD'})).status,200);
+      blocked=true;const before=reads;
+      const denied=await fetch(url);assert.equal(denied.status,403);assert.equal((await denied.json()).code,'res_blocked');
+      assert.equal(reads,before);blocked=false;
+    }
+    assert.ok(policyChecks>4);
+    assert.equal((await fetch(base+'/api/prepared?path=%2F%D0%AD%D0%A1%2F%D0%A0%D0%AD%D0%A1%2F%D0%B6%D1%83%D1%80%D0%BD%D0%B0%D0%BB.xlsx&role=unrecognised')).status,400);
+  } finally {await new Promise(resolve=>server.close(resolve));}
+});

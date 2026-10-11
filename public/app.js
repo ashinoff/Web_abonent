@@ -1,7 +1,7 @@
 import { readBoundedBuffer } from './download-buffer.js';
 import { clean, norm, fieldKey } from './core.js';
 import { demo, demoMonthly } from './demo.js';
-import { findSource, isExcelFile, isRegistryFile, isConsumptionFile, REGISTRY_NAME, CONSUMPTION_NAME, INCOMING_NAME } from './source.js';
+import { findSource, isExcelFile, isRegistryFile, isConsumptionFile, REGISTRY_NAME, CONSUMPTION_NAME, INCOMING_NAME, INSTANT_NAME, EVENTS_NAME, sourceRoleKeys } from './source.js';
 import { initSourceFiles } from './source-files.js';
 import { attachDialogSwipe } from './gestures.js';
 import { groupRecordFields } from './record-sections.js';
@@ -12,7 +12,7 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=13';
+import { listOfflineCopies } from './prepared-cache.js?v=15';
 import { createUserNotifications } from './user-notifications.js';
 import { initUserNoteEditor } from './user-note-editor.js';
 import { initAccountUI } from './account-ui.js';
@@ -44,6 +44,9 @@ let sourceState = 'loading', diskState = 'checking', directoryState = 'loading',
 let consumptionFile = null, consumptionState = 'idle', consumptionError = '', registryState = 'idle', busyText = '';
 let incomingFile = null, incomingState = 'idle', incomingError = '', monthlyWorker = null, monthlyId = 0;
 const monthlyRequests = new Map();
+const journalRoles = ['instant', 'events'];
+const journalSources = Object.fromEntries(journalRoles.map(role => [role, { file: null, state: 'idle', error: '', info: null }]));
+let exporting = false;
 let summary = null, pending = null, currentSource = null, isDemo = false, busy = false, operation = 0;
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 let folderItems = [], filesState = 'idle', filesError = '', registryError = '', consumptionInfo = null, incomingInfo = null;
@@ -61,7 +64,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=13', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=15', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
@@ -97,9 +100,15 @@ function monthlyRPC(action, payload = {}, transfer = []) {
   }
   return new Promise((resolve,reject) => {
     const id=++monthlyId, timer=setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },
-      ['loadPreparedMonthly','checkPreparedIncoming'].includes(action) ? 300000 : 120000);
-    monthlyRequests.set(id,{resolve,reject,timer}); monthlyWorker.postMessage({id,action,payload},transfer);
+      ['loadPreparedMonthly','checkPreparedIncoming','loadPreparedJournal','exportAnomalies'].includes(action) ? 300000 : 120000);
+    monthlyRequests.set(id,{resolve,reject,timer,action,role:payload.role}); monthlyWorker.postMessage({id,action,payload},transfer);
   });
+}
+function cancelJournalLoads(roles, error = new Error('Чтение журнала остановлено.')) {
+  monthlyWorker?.postMessage({ id: 0, action: 'cancelJournalLoads', payload: { roles } });
+  for (const [id, request] of monthlyRequests) if (['loadPreparedJournal', 'loadJournal', 'clearAnalysisJournal'].includes(request.action)) {
+    clearTimeout(request.timer); monthlyRequests.delete(id); request.reject(error);
+  }
 }
 function incomingRPC(action, payload, transfer = [], signal = loads.signal) {
   return new Promise((resolve, reject) => {
@@ -120,6 +129,9 @@ function stopLoading() {
   if (!summary || registryState === 'checking') { resetWorker(); pending = null; $('#mapping-section').hidden = true; }
   if (consumptionState === 'checking') { resetMonthly(); analysisUI.reset(); consumptionState = 'error'; consumptionError = text; }
   if (incomingState === 'checking') { incomingState = 'error'; incomingError = text; }
+  const stoppedJournals = journalRoles.filter(role => journalSources[role].state === 'checking');
+  if (stoppedJournals.length) cancelJournalLoads(stoppedJournals);
+  for (const role of stoppedJournals) { journalSources[role].state = 'error'; journalSources[role].error = text; }
   if (registryState === 'checking') { registryState = summary ? 'ready' : 'error'; registryError = text; }
   if (filesState === 'loading') { filesState = 'error'; filesError = text; }
   if (resState === 'loading') resState = 'error';
@@ -228,12 +240,12 @@ function renderIndicators() {
   const offline = $('#offline-readiness');
   offline.hidden = !selectedRes || !config.prepared;
   if (!offline.hidden) {
-    const ready = shellReady && summary?.cached && (!consumptionFile || consumptionInfo?.cached) && (!incomingFile || incomingInfo?.cached);
+    const ready = shellReady && summary?.cached && (!consumptionFile || consumptionInfo?.cached) && (!incomingFile || incomingInfo?.cached) && journalRoles.every(role => !journalSources[role].file || journalSources[role].info?.cached);
     offline.dataset.ready = String(Boolean(ready));
     offline.textContent = ready ? `Данные ${selectedRes.name} сохранены на телефоне · доступны без интернета` :
       'Офлайн-копия ещё не готова. Загрузите данные или нажмите «Скачать на телефон» в карте загрузки.';
   }
-  const cachedOffline = summary?.offline || consumptionInfo?.offline || incomingInfo?.offline;
+  const cachedOffline = summary?.offline || consumptionInfo?.offline || incomingInfo?.offline || journalRoles.some(role => journalSources[role].info?.offline);
   const baseState = sourceState === 'loading' ? 'checking' : !config.prepared ? (proxy ? 'off' : 'idle') : !navigator.onLine || cachedOffline ? 'off' : config.databaseConnected ? 'on' : 'off';
   const baseText = baseState === 'checking' ? 'Проверяем подключение к базе…' : !config.prepared ? 'База не подключена · доступен прежний режим Excel' : cachedOffline ? 'Открыты сохранённые данные с телефона' : baseState === 'on' ? 'Подготовленные данные базы доступны' : !navigator.onLine ? 'База недоступна · открыты сохранённые данные' : 'Нет связи с базой данных';
   const registryText = registryState === 'ready' || summary ? 'Реестр готов к поиску' : registryState === 'checking' ? busyText || 'Проверяем реестр…' : pending ? 'Подтвердите столбцы в настройках' : registryError || (registryState === 'missing' ? 'Файл реестра не найден' : registryState === 'error' ? 'Реестр не загружен' : 'Сначала выберите РЭС');
@@ -253,13 +265,26 @@ function renderIndicators() {
   $('#enterprise-detail').textContent = selectedFolder?.name || 'Не выбрано';
   $('#res-detail').textContent = selectedRes?.name || 'Не выбрана';
   $('#contour-open').disabled = busy || consumptionState !== 'ready';
+  const exportButton = $('#anomaly-export');
+  const pendingJournals = journalRoles.some(role => journalSources[role].file && journalSources[role].state === 'checking');
+  const canExport = Boolean(selectedRes && summary && consumptionState === 'ready' && !isDemo && !pendingJournals);
+  exportButton.disabled = !canExport || busy || exporting;
+  exportButton.dataset.state = exporting || pendingJournals ? 'checking' : canExport ? 'on' : selectedRes ? 'off' : 'idle';
+  exportButton.title = exporting ? 'Готовим Excel-отчёт…' : pendingJournals ? 'Для отчёта ждём завершения чтения журналов' : canExport ? `Выгрузить аномалии: ${selectedRes.name}` : selectedRes ? 'Для отчёта загрузите реестр и потребление выбранной РЭС' : 'Сначала выберите РЭС';
+  exportButton.setAttribute('aria-label', 'Excel-отчёт по аномалиям: ' + exportButton.title);
   $('#tp-analyze').disabled = busy || consumptionState !== 'ready';
   const analysisButton = $('#consumer-analyze');
   if (analysisButton) { analysisButton.disabled = consumptionState !== 'ready' || !activeRecord?.fields.account; $('#analysis-availability').textContent = consumptionState === 'ready' ? 'Все строки ЛС + ТУ суммируются по месяцам. Анализируем общий объём точки.' : consumptionText; }
   sourceFiles.render({ res: selectedRes, items: folderItems, listState: filesState, listError: filesError, busy: busy || directoryState === 'loading' || sourceState === 'loading', sources: {
     registry: { file: currentSource || selectedFile, saved: selectedRes && prefs.fileChoices?.registry, expected: REGISTRY_NAME, state: summary ? 'ready' : registryState, meta: summary ? recordsText(summary.count) : '', message: registryText },
     consumption: { file: consumptionFile, saved: selectedRes && prefs.fileChoices?.consumption, expected: CONSUMPTION_NAME, state: consumptionState, meta: consumptionInfo ? `${recordsText(consumptionInfo.rowCount)} · ${consumptionInfo.months.length} мес.` : '', message: consumptionState === 'ready' ? 'Готов к анализу' : consumptionText },
-    incoming: { file: incomingFile, saved: selectedRes && prefs.fileChoices?.incoming, expected: INCOMING_NAME, state: incomingState, meta: incomingInfo ? `Заполненных листов: ${incomingInfo.sheets}` : '', message: incomingState === 'ready' ? 'Файл прочитан · расчёт баланса подключим позже' : incomingText }
+    incoming: { file: incomingFile, saved: selectedRes && prefs.fileChoices?.incoming, expected: INCOMING_NAME, state: incomingState, meta: incomingInfo ? `Заполненных листов: ${incomingInfo.sheets}` : '', message: incomingState === 'ready' ? 'Файл прочитан · расчёт баланса подключим позже' : incomingText },
+    ...Object.fromEntries(journalRoles.map(role => {
+      const source = journalSources[role], label = role === 'instant' ? 'Журнал 31' : 'Журнал 46';
+      return [role, { file: source.file, saved: selectedRes && prefs.fileChoices?.[role], expected: role === 'instant' ? INSTANT_NAME : EVENTS_NAME, state: source.state,
+        meta: source.info ? `${source.info.meterCount} ПУ · строк принято: ${source.info.stats?.accepted ?? source.info.stats?.rows ?? 0}` : '',
+        message: source.state === 'ready' ? label + ' подключён к анализу' + (source.info.warnings?.length ? ' · есть замечания к данным' : '') : source.state === 'checking' ? 'Читаем ' + label.toLowerCase() + '…' : source.state === 'missing' ? 'Дополнительный журнал не найден; анализ потребления доступен' : source.error || 'Дополнительный источник для анализа' }];
+    }))
   } });
 }
 function renderSourceState() {
@@ -464,7 +489,7 @@ async function refreshResFiles() {
   await openRes(selectedRes, { keepSettings: true });
 }
 async function useSourceFile(role, path) {
-  if (busy || folderRead || !selectedRes || filesState !== 'ready' || !['registry', 'consumption', 'incoming'].includes(role)) return;
+  if (busy || folderRead || !selectedRes || filesState !== 'ready' || !sourceRoleKeys.includes(role)) return;
   const choices = { ...prefs.fileChoices };
   if (path === null) {
     delete choices[role]; prefs.fileChoices = choices; savePrefs();
@@ -475,9 +500,11 @@ async function useSourceFile(role, path) {
   choices[role] = { path: file.path, name: file.name }; prefs.fileChoices = choices; savePrefs();
   if (role === 'registry') { await refreshResFiles(); return; }
   const signal = loads.start();
-  if (role === 'consumption') { consumptionFile = file; await readConsumptionFile(signal); }
-  else { incomingFile = file; await readIncomingFile(signal); }
-  if (loads.current(signal) && (role === 'consumption' ? consumptionState : incomingState) === 'ready') toast('Файл прочитан: ' + file.name);
+  if (role === 'consumption') { consumptionFile = file; await readConsumptionFile(signal, usingOfflineCopy); }
+  else if (role === 'incoming') { incomingFile = file; await readIncomingFile(signal, usingOfflineCopy); }
+  else { journalSources[role].file = file; await readJournalFile(role, signal, usingOfflineCopy); }
+  const state = role === 'consumption' ? consumptionState : role === 'incoming' ? incomingState : journalSources[role].state;
+  if (loads.current(signal) && state === 'ready') toast('Файл прочитан: ' + file.name);
 }
 async function openRes(res, { keepSettings = false, offlineCopy = null } = {}) {
   if (!selectedFolder) return;
@@ -510,6 +537,9 @@ async function openRes(res, { keepSettings = false, offlineCopy = null } = {}) {
     consumptionFile = findSource(folderItems, 'consumption', choices); consumptionState = consumptionFile ? 'checking' : 'missing';
     selectedFile = findSource(folderItems, 'registry', choices);
     incomingFile = findSource(folderItems, 'incoming', choices); incomingState = incomingFile ? 'checking' : 'missing';
+    for (const role of journalRoles) {
+      const source = journalSources[role]; source.file = findSource(folderItems, role, choices); source.state = source.file ? 'checking' : 'missing';
+    }
   } catch (error) {
     if (!loads.current(signal)) return;
     filesState = 'error'; filesError = error.message;
@@ -522,8 +552,9 @@ async function openRes(res, { keepSettings = false, offlineCopy = null } = {}) {
     registryState = 'missing'; renderIndicators();
     message('#settings-message', 'Реестр не найден. Выберите файл вручную в разделе «Просмотр файлов».'); showSettings();
   }
-  if (loads.current(signal) && consumptionFile) await readConsumptionFile(signal, Boolean(offlineCopy));
+  if (loads.current(signal) && consumptionFile) await readConsumptionFile(signal, Boolean(offlineCopy), false);
   if (loads.current(signal) && incomingFile) await readIncomingFile(signal, Boolean(offlineCopy));
+  if (loads.current(signal)) await readSelectedJournals(signal, Boolean(offlineCopy));
 }
 async function fetchWorkbook(file, signal = loads.signal) {
   if (file.size > (config.maxFileMB || 40) * 1048576) throw new Error('Файл больше 40 МБ.');
@@ -612,7 +643,7 @@ async function readIncomingFile(signal = loads.signal, offlineOnly = false) {
   } catch(error) { if(op!==operation || incomingFile!==file)return;incomingState='error';incomingError=error.message; }
   if (op===operation) setBusy(false);
 }
-async function readConsumptionFile(signal = loads.signal, offlineOnly = false) {
+async function readConsumptionFile(signal = loads.signal, offlineOnly = false, loadJournals = true) {
   if (!loads.current(signal)) return;
   const op = operation, file = consumptionFile;
   consumptionState = 'checking'; consumptionError = ''; consumptionInfo = null; resetMonthly(); analysisUI.reset(); setBusy(true, 'Читаем файл потребления…');
@@ -642,12 +673,68 @@ async function readConsumptionFile(signal = loads.signal, offlineOnly = false) {
   } catch (error) {
     if (op !== operation || consumptionFile !== file) return;
     consumptionState = 'error'; consumptionError = error.message;
+  } finally {
+    if (loads.current(signal) && op === operation && loadJournals && consumptionState === 'ready') await readSelectedJournals(signal, offlineOnly);
   }
   if (op === operation) setBusy(false);
+}
+async function readJournalFile(role, signal = loads.signal, offlineOnly = false) {
+  const source = journalSources[role], file = source.file, op = operation;
+  if (!file || !loads.current(signal)) return;
+  source.state = 'checking'; source.error = ''; source.info = null;
+  analysisUI.reset(); setBusy(true, `Читаем журнал ${role === 'instant' ? '31' : '46'}…`);
+  try {
+    await monthlyRPC('clearAnalysisJournal', { role });
+    if (!loads.current(signal) || op !== operation || source.file !== file) return;
+    let info;
+    if (proxy && config.prepared && file.path) {
+      info = await monthlyRPC('loadPreparedJournal', { source: rootUrl(), path: file.path, role, offlineOnly });
+    } else {
+      const { buffer, file: latest } = await fetchWorkbook(file, signal);
+      if (!loads.current(signal) || op !== operation || source.file !== file) return;
+      Object.assign(file, latest);
+      info = await monthlyRPC('loadJournal', { buffer, role }, [buffer]);
+    }
+    if (!loads.current(signal) || op !== operation || source.file !== file) return;
+    source.info = info; source.state = 'ready';
+  } catch (error) {
+    if (!loads.current(signal) || op !== operation || source.file !== file) return;
+    source.state = 'error'; source.error = error.message.replace(/^MEMORY_LIMIT:\s*/, '');
+  } finally { if (loads.current(signal) && op === operation) setBusy(false); }
+}
+async function readSelectedJournals(signal = loads.signal, offlineOnly = usingOfflineCopy) {
+  for (const role of journalRoles) {
+    if (!loads.current(signal)) return;
+    if (journalSources[role].file) await readJournalFile(role, signal, offlineOnly);
+  }
+  if (loads.current(signal)) renderIndicators();
+}
+async function exportAnomalies() {
+  if (!selectedRes || !summary || consumptionState !== 'ready' || busy || exporting) return;
+  const op = operation, res = selectedRes;
+  exporting = true; renderIndicators(); toast('Готовим Excel-отчёт по выбранной РЭС…');
+  try {
+    const files = { registry: selectedFile, consumption: consumptionFile, incoming: incomingFile, ...Object.fromEntries(journalRoles.map(role => [role, journalSources[role].file])) };
+    const { buffer, count } = await monthlyRPC('exportAnomalies', { settings: analysisUI.getSettings(), context: {
+      res: { name: res.name, path: res.path }, source: rootUrl(), sourceMode: usingOfflineCopy ? 'offline' : 'online', files,
+      journalStates: Object.fromEntries(journalRoles.map(role => [role, { state: journalSources[role].state, error: journalSources[role].error }]))
+    } });
+    if (op !== operation || selectedRes !== res) return;
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const href = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = href; link.download = `Аномалии_${res.name.replace(/[\\/:*?"<>|]/g, '_')}_${new Date().toLocaleDateString('sv-SE')}.xlsx`;
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(href), 60000);
+    toast(`Отчёт готов · потребителей в списке: ${count}`);
+  } catch (error) { if (op === operation) toast(error.message); }
+  finally { exporting = false; renderIndicators(); }
 }
 function clearDataset(keepDirectory = false) {
   notesUI.reset();
   userNoteEditor.reset();
+  for (const source of Object.values(journalSources)) {
+    source.info = null; source.error = ''; if (!keepDirectory) source.file = null;
+    source.state = source.file ? 'checking' : 'idle';
+  }
   operation++; consumptionInfo = null; incomingInfo = null; registryError = ''; resetMonthly(); analysisUI.reset(); incomingFile=null; incomingState='idle'; incomingError=''; if (keepDirectory) { if (consumptionFile) consumptionState='checking'; } else { consumptionFile=null; consumptionState='idle'; consumptionError=''; } searchVersion++; resetWorker(); summary = null; pending = null; currentSource = null; isDemo = false; submitted = false; results = []; resultTotal = 0;
   tpVersion++; recordVersion++; tpChoices = []; tpSelection = null; tpMeters = []; tpBusy = false; if (!keepDirectory) { folderItems = []; filesState = 'idle'; filesError = ''; }
   tpViewKey = ''; tpPickerQuery = ''; tpPickerScroll = 0; clearTimeout(tpFilterTimer);
@@ -955,8 +1042,8 @@ const loadMap = initLoadMap(rootUrl, {
     if(folder.load_blocked)return [];
     const files = folderSources(folder);
     if (folder.res_path !== selectedRes?.path || filesState !== 'ready') return files;
-    return ['registry', 'consumption', 'incoming'].flatMap(role => {
-      const file = { registry: selectedFile, consumption: consumptionFile, incoming: incomingFile }[role];
+    return sourceRoleKeys.flatMap(role => {
+      const file = { registry: selectedFile, consumption: consumptionFile, incoming: incomingFile, ...Object.fromEntries(journalRoles.map(role => [role, journalSources[role].file])) }[role];
       return file?.path ? [{ ...file, role }] : files.filter(item => item.role === role);
     });
   },
@@ -967,7 +1054,7 @@ const loadMap = initLoadMap(rootUrl, {
     if (source !== rootUrl() || resPath !== selectedRes?.path) return;
     const copy = action === 'delete' ? null : (await listOfflineCopies(source)).find(item => item.resPath === resPath);
     if (source !== rootUrl() || resPath !== selectedRes?.path) return;
-    for (const [role, file, info] of [['registry', selectedFile, summary], ['consumption', consumptionFile, consumptionInfo], ['incoming', incomingFile, incomingInfo]]) {
+    for (const [role, file, info] of [['registry', selectedFile, summary], ['consumption', consumptionFile, consumptionInfo], ['incoming', incomingFile, incomingInfo], ...journalRoles.map(role => [role, journalSources[role].file, journalSources[role].info])]) {
       if (info) info.cached = Boolean(copy?.files.some(saved => saved.role === role && saved.path === file?.path && saved.revision === info.revision));
     }
     renderIndicators();
@@ -1002,6 +1089,7 @@ document.addEventListener('click',e=>{const button=e.target.closest('[data-readi
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.reading-calculator')){e.preventDefault();applyReading(e.target.closest('.reading-calculator'));}});
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises); $('#res-button').addEventListener('click', showRes);
 $('#offline-open').addEventListener('click', showOfflineCopies);
+$('#anomaly-export').addEventListener('click', exportAnomalies);
 $('#offline-list').addEventListener('click', e => { const button = e.target.closest('[data-offline-res]'); if (button && !button.disabled) selectOfflineRes(Number(button.dataset.offlineRes)); });
 document.addEventListener('click', e => {
   const indicator = e.target.closest('#base-indicator, #registry-indicator');
@@ -1071,7 +1159,9 @@ $('#local-monthly').addEventListener('change', async e => {
     if (!loads.current(signal) || op !== operation) return;
     const info = await loadMonthlyBuffer(buffer);
     if (!loads.current(signal) || op !== operation) return;
-    consumptionInfo = info; consumptionState = 'ready'; message('#settings-message', 'Потребление готово к анализу.');
+    consumptionInfo = info; consumptionState = 'ready';
+    await readSelectedJournals(signal, usingOfflineCopy);
+    if (loads.current(signal) && op === operation) message('#settings-message', 'Потребление готово к анализу.');
   } catch (error) { if (loads.current(signal) && op === operation) { consumptionState = 'error'; consumptionError = error.message; message('#settings-message', error.message); } }
   finally { if (loads.current(signal) && op === operation) { setBusy(false); renderIndicators(); } e.target.value = ''; }
 });

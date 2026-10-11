@@ -1,0 +1,222 @@
+import { ALG_META, BOOST_DEFS, buildTune } from './analysis-engine.js';
+import { normalizeSettings } from './analysis-settings.js';
+import { TUNE_HINT, LEVEL_NAMES } from './analysis-tuning.js';
+import { INSTANT_METRICS } from './journals.js';
+import { flagObservation } from './analysis-observations.js';
+
+const MAX_ROWS = 1048576, MAX_COLUMNS = 16384, MAX_TEXT = 32767;
+const MAX_REPORT_XML_BYTES = 96 * 1024 * 1024;
+const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+const ZONES = { red: 'Высокий приоритет', amber: 'Наблюдение', green: 'Без выраженных признаков', dead: 'Нулевой ряд', unknown: 'Недостаточно данных' };
+const JOURNAL_ZONES = { high: 'Высокий', check: 'Проверить', none: 'Без признаков' };
+const SOURCE_NAMES = { instant: 'Журнал 31', events: 'Журнал 46', correlation: 'Журналы + месячный ПО', monthly: 'Полезный отпуск', consumption: 'Полезный отпуск', registry: 'Реестр ПУ', incoming: 'Приём' };
+const MONTH_RECOMMENDATIONS = {
+  S1: 'Сверить начало роста с вводом объекта, заменой ПУ и контрольными снятиями.',
+  S2: 'Сверить всплески с контрольными снятиями и корректировками начислений.',
+  S3: 'Сверить дату падения с отключениями, нагрузкой, заменой ПУ и журналом событий.',
+  'S3б': 'Проверить отключения, корректировки и режим объекта внутри провала и при восстановлении.',
+  S4: 'Уточнить фактическое использование объекта и изменение нагрузки.',
+  S5: 'Сопоставить нулевые месяцы с отключениями и фактической работой объекта.',
+  S6: 'Проверить повторение передаваемых значений по контрольным показаниям.',
+  S7: 'Сверить округлённые объёмы с контрольными показаниями и способом начисления.',
+  S8: 'Уточнить сопоставимость потребителей и режимов их работы.',
+  S9: 'Проверить сезонный режим объекта и электрическое отопление.',
+  S10: 'Сверить разрешённую мощность, фактическую нагрузку и схему присоединения.',
+  S11: 'Сопоставить расхождения с техническим учётом и журналами событий.',
+  S12: 'Проверить документы по разовому объёму: снятие, перерасчёт, доначисление.',
+  S13: 'Сверить рост с заменой ПУ, проверкой, вводом оборудования и расширением деятельности.',
+  S14: 'Сопоставить снижение с историей работы объекта и изменением его нагрузки.',
+};
+
+function xml(value) {
+  return String(value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')
+    .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+}
+const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const list = value => Array.isArray(value) ? value.map(item => typeof item === 'object' && item ? item.label || item.name || item.number || item.point || item.id || '' : item).filter(v => v !== '' && v != null).join('\n') : value ?? '';
+const uniqueLines = value => [...new Set((Array.isArray(value) ? value : [value]).filter(v => v != null && String(v).trim()).map(String))].join('\n');
+const unmatchedReasons = values => uniqueLines((values || []).map(v => typeof v === 'object' && v ? `${v.reason || 'Причина не указана'}${v.meters != null ? ` — ${v.meters} ПУ` : ''}` : v));
+const resultOf = row => row.result || row;
+const monthLabel = month => month && Number.isInteger(month.y) && Number.isInteger(month.m) ? `${String(month.m + 1).padStart(2, '0')}.${month.y}` : String(month?.label || month || '');
+function dateCell(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) && value > 20000 && value < 150000 ? { value, date: true } : null;
+  // Journal timestamps describe the meter's calendar, without changing time zone.
+  const match = String(value instanceof Date ? value.toISOString() : value).match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if (!match) return String(value);
+  const [year, month, day, hour, minute, second] = match.slice(1).map(v => Number(v || 0));
+  const time = Date.UTC(year, month - 1, day, hour, minute, second);
+  const check = new Date(time);
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59) return String(value);
+  return { value: time / 86400000 + 25569, date: true };
+}
+function columnName(index) {
+  let name = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + (n - 1) % 26) + name;
+  return name;
+}
+function cellXML(value, col, row, style, numericStyle = 4) {
+  if (value == null || value === '') return '';
+  const ref = columnName(col) + row;
+  if (typeof value === 'object' && value.date) return `<c r="${ref}" s="6"><v>${value.value}</v></c>`;
+  if (typeof value === 'number' && Number.isFinite(value)) return `<c r="${ref}" s="${numericStyle}"><v>${value}</v></c>`;
+  if (typeof value === 'boolean') return `<c r="${ref}" s="${style}" t="b"><v>${value ? 1 : 0}</v></c>`;
+  const text = String(value);
+  if (text.length > MAX_TEXT) throw new Error(`Текст ${ref} длиннее лимита Excel (${MAX_TEXT} знаков). Уточните исходные данные.`);
+  // Inline strings never become formulas, even when a name starts with =, +, - or @.
+  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(text)}</t></is></c>`;
+}
+
+function xmlChunks(budget) {
+  const encoder = new TextEncoder(), blocks = []; let pending = [], characters = 0, bytes = 0;
+  const flush = () => {
+    if (!pending.length) return;
+    const block = encoder.encode(pending.join('')); bytes += block.byteLength;
+    if (bytes > budget) throw new Error('Отчёт слишком большой для безопасной выгрузки на устройстве (лимит XML 96 МБ). Уменьшите период исходного журнала и повторите подготовку.');
+    blocks.push(block); pending = []; characters = 0;
+  };
+  return {
+    push(...parts) { for (const part of parts) { pending.push(part); characters += part.length; if (characters >= 65536) flush(); } },
+    flush,
+    finish() { flush(); const output = new Uint8Array(bytes); let offset = 0; for (const block of blocks) { output.set(block, offset); offset += block.byteLength; } return output; },
+  };
+}
+function rowHeight(cells, widths) {
+  let lines = 1;
+  for (let col = 0; col < cells.length; col++) {
+    if (typeof cells[col] !== 'string') continue;
+    const characters = Math.max(4, Math.floor((widths[col] || 20) * 0.85));
+    const count = cells[col].split(/\r\n|\r|\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / characters)), 0);
+    lines = Math.max(lines, count);
+  }
+  // Excel caps a row at 409 points. Full text remains in the cell at that cap.
+  return Math.min(409, Math.max(20, lines * 14 + 4));
+}
+function sheetXML({ title, subtitle, headers, widths = [], rows, priorityColumn = -1, numberColumns = [], integerColumns = [], freezeColumns = 0 }, generated, budget) {
+  if (headers.length > MAX_COLUMNS) throw new Error(`Лист «${title}» превышает лимит столбцов Excel.`);
+  if (rows.length + 5 > MAX_ROWS) throw new Error(`Лист «${title}» превышает лимит строк Excel. Уменьшите период или объём выгрузки.`);
+  const end = columnName(headers.length - 1), bottom = Math.max(5, rows.length + 5);
+  const numeric = new Set(numberColumns), integers = new Set(integerColumns);
+  const pane = freezeColumns ? 'bottomRight' : 'bottomLeft', start = columnName(freezeColumns) + '6';
+  const chunks = xmlChunks(budget);
+  chunks.push(XML, `<worksheet xmlns="${NS}"><dimension ref="A1:${end}${bottom}"/><sheetViews><sheetView workbookViewId="0"><pane ${freezeColumns ? `xSplit="${freezeColumns}" ` : ''}ySplit="5" topLeftCell="${start}" activePane="${pane}" state="frozen"/><selection pane="${pane}" activeCell="${start}" sqref="${start}"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols>`);
+  for (let col = 0; col < headers.length; col++) chunks.push(`<col min="${col + 1}" max="${col + 1}" width="${widths[col] || 20}" customWidth="1"/>`);
+  chunks.push('</cols><sheetData>', `<row r="1" ht="31" customHeight="1">${cellXML(title, 0, 1, 1)}</row>`, `<row r="2" ht="30" customHeight="1">${cellXML(subtitle, 0, 2, 8)}</row>`, `<row r="3" ht="24" customHeight="1">${cellXML('Сформировано: ' + generated, 0, 3, 8)}</row>`, `<row r="5" ht="42" customHeight="1">${headers.map((h, col) => cellXML(h, col, 5, 2)).join('')}</row>`);
+  for (let index = 0; index < rows.length; index++) {
+    const row = typeof rows.at === 'function' ? rows.at(index) : rows[index], rowNumber = index + 6;
+    const content = Array.isArray(row) ? row : row.cells;
+    const height = rowHeight(content, widths);
+    chunks.push(`<row r="${rowNumber}"${height > 20 ? ` ht="${height}" customHeight="1"` : ''}>`);
+    for (let col = 0; col < content.length; col++) {
+      let style = index % 2 ? 9 : 3;
+      if (col === priorityColumn) style = row.priority === 'high' ? 10 : row.priority === 'check' ? 11 : 12;
+      chunks.push(cellXML(content[col], col, rowNumber, style, integers.has(col) ? 5 : numeric.has(col) ? 4 : 5));
+    }
+    chunks.push('</row>');
+    if (index % 256 === 255) chunks.flush();
+  }
+  chunks.push(`</sheetData><autoFilter ref="A5:${end}${bottom}"/><mergeCells count="3"><mergeCell ref="A1:${end}1"/><mergeCell ref="A2:${end}2"/><mergeCell ref="A3:${end}3"/></mergeCells><printOptions horizontalCentered="0"/><pageMargins left="0.25" right="0.25" top="0.4" bottom="0.4" header="0.2" footer="0.2"/><pageSetup orientation="landscape" paperSize="9" fitToWidth="1" fitToHeight="0"/></worksheet>`);
+  return chunks.finish();
+}
+
+const STYLES = XML + `<styleSheet xmlns="${NS}"><numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00;[Red]-#,##0.00;0.00"/><numFmt numFmtId="165" formatCode="dd.mm.yyyy hh:mm"/></numFmts><fonts count="4"><font><sz val="11"/><name val="Calibri"/><color rgb="FF19324F"/></font><font><b/><sz val="17"/><name val="Calibri"/><color rgb="FFFFFFFF"/></font><font><b/><sz val="11"/><name val="Calibri"/><color rgb="FFFFFFFF"/></font><font><sz val="10"/><name val="Calibri"/><color rgb="FF526B80"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF19324F"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDF5F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFCE5E5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0D8"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE4F2E9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="hair"><color rgb="FFD6E2E8"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="13"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+
+function sourceFile(value) { return typeof value === 'object' && value ? value.name || value.fileName || value.filename || value.path || '' : value ?? ''; }
+function reportSheets(report, context, generated) {
+  // The service owns selection: it also selects missing/negative data for repair.
+  const rows = report.rows, months = report.months || [], settings = normalizeSettings(report.settings || context.settings);
+  const coverage = report.coverage || {}, unmatched = report.unmatched || {};
+  const res = typeof context.res === 'object' && context.res ? context.res.name || context.res.path : context.res || context.resName || report.res || 'Выбранная РЭС';
+  const subtitle = `${res} · ${months.length ? monthLabel(months[0]) + ' — ' + monthLabel(months.at(-1)) : 'Период ПО не указан'}`;
+  const summary = [
+    ['РЭС', res], ['Источник', context.sourceName || context.source || 'Выбранный источник'],
+    ['Режим данных', context.sourceMode === 'offline' ? 'Сохранённая копия на устройстве' : 'Подготовленные данные выбранной РЭС'],
+    ['ЛС в анализе', number(report.counts?.accounts) ?? rows.length], ['ЛС в отчёте', rows.length],
+    ['Событий журнала 46 в отчёте', (report.events || []).length],
+    ['Месячный анализ: высокий приоритет / наблюдение', `${report.counts?.red ?? 0} / ${report.counts?.amber ?? 0}`],
+    ['Месячный анализ: нулевые ряды / недостаточно данных', `${report.counts?.dead ?? 0} / ${report.counts?.unknown ?? 0}`],
+    ['Журналы: высокий приоритет / проверить', `${report.counts?.journalHigh ?? 0} / ${report.counts?.journalCheck ?? 0}`],
+    ['Объект анализа', 'Один итоговый ряд на ЛС, сумма всех его ТУ. Потребление не дублируется по ПУ.'],
+    ['Что означает отбор', 'Наблюдаемые признаки для проверки; сами по себе они не устанавливают причину изменения потребления.'],
+    ['Оценка отклонения ПО', 'Ориентир действующей месячной модели, не фактический небаланс и не объём к доначислению. Журнал 31 не используется для расчёта кВт·ч недоучёта.'],
+    ['Коэффициенты', 'К ПО коэффициент ТТ повторно не применяется. Мгновенные величины журнала 31 приводятся в единицах исходной выгрузки; сравнение с разрешённой мощностью требует подтверждения коэффициентов.'],
+    ['Сопоставление', 'По серийному номеру ПУ через реестр выбранной РЭС. Неоднозначные и отсутствующие связи не приписываются потребителю.'],
+    ['Связь события и ПО', 'Совпадение по времени означает совместное наблюдение, а не доказанную причинную связь. ПО имеет месячный шаг, журнал — точное время события.'],
+    ['Пустые значения ПО', 'Пустая ячейка — нет полного значения; 0 — известный нулевой объём. Итог в строке суммирует только известные месяцы и может быть неполным. Отрицательные корректировки сохранены, но исключены из поиска месячных признаков.'],
+    ['Зоны месячного анализа', `Режим: ${settings.zone === 'loss' ? 'оценка отклонения' : 'баллы'}. Высокий приоритет ≥ ${settings.zone === 'loss' ? settings.lossRed + ' кВт·ч' : settings.red + ' баллов'}; наблюдение ≥ ${settings.zone === 'loss' ? settings.lossAmber + ' кВт·ч' : settings.amber + ' баллов'}.`],
+    ['Журнальные признаки', 'Приоритет и баллы журналов показаны отдельно; исходные месячные зоны, баллы и оценка отклонения сохранены.'],
+  ];
+  for (const role of ['registry', 'consumption', 'incoming', 'instant', 'events']) summary.push([`Файл: ${SOURCE_NAMES[role]}`, sourceFile(context.files?.[role]) || 'Не указан / не загружен']);
+  for (const role of ['instant', 'events']) {
+    const c = coverage[role] || {}, u = unmatched[role] || {};
+    summary.push([`${SOURCE_NAMES[role]}: доступность`, c.loaded ? 'Загружен' : 'Не загружен; соответствующие признаки не рассчитываются'], [`${SOURCE_NAMES[role]}: ПУ всего / сопоставлено`, `${c.totalMeters ?? 0} / ${c.matchedMeters ?? 0}`], [`${SOURCE_NAMES[role]}: начало`, dateCell(c.first)], [`${SOURCE_NAMES[role]}: конец`, dateCell(c.last)], [`${SOURCE_NAMES[role]}: не сопоставлено ПУ / строк`, `${u.meters ?? 0} / ${u.rows ?? 0}`], [`${SOURCE_NAMES[role]}: причины несопоставления`, unmatchedReasons(u.reasons) || (u.meters ? 'Не сообщены' : 'Нет несопоставленных ПУ')], [`${SOURCE_NAMES[role]}: качество данных`, uniqueLines(c.warnings) || 'Дополнительных замечаний нет']);
+    const state = context.journalStates?.[role];
+    if (state) summary.push([`${SOURCE_NAMES[role]}: состояние загрузки`, state.state === 'error' ? `Ошибка: ${state.error || state.message || 'Причина не передана'}` : state.state === 'missing' ? 'Файл не найден в папке РЭС' : state.state === 'ready' ? 'Готов' : state.state === 'loading' ? 'Загрузка ещё выполняется' : state.state || 'Не загружен']);
+  }
+  const coefficientName = mode => mode === 'unscaled' ? 'Без коэффициентов трансформации' : mode === 'scaled' ? 'С коэффициентами трансформации' : 'Применение коэффициентов не подтверждено';
+  summary.push(['Журнал 31: коэффициенты', coefficientName(coverage.instant?.coefficientMode)], ['Журнал 31: период выгрузки с', dateCell(coverage.instant?.reportPeriod?.from)], ['Журнал 31: период выгрузки по', dateCell(coverage.instant?.reportPeriod?.to)]);
+  if (report.warnings?.length) summary.push(['Проверка исходных данных', uniqueLines(report.warnings)]);
+  for (const [key, meta] of Object.entries(ALG_META)) {
+    const tune = buildTune(settings.levels)[key];
+    const state = settings.algOff[key] ? 'Отключён' : ['zeroAlive', 'peers', 'season', 'imb', 'dzero', 'dsync'].includes(key) ? 'Только контур ТП / другие форматы; в отчёте ЛС не применяется' : 'Включён';
+    summary.push([`${meta.code} · ${meta.title}`, `${state}; ${LEVEL_NAMES[tune.level]}; ${TUNE_HINT[key]?.(tune) || ''}; вес ×${tune.ptsF}`]);
+  }
+  summary.push(['Дополнительные приоритеты ПО', BOOST_DEFS.filter(b => settings.boosts[b.id]).map(b => `${b.label} (+${b.pts})`).join('; ') || 'Не включены']);
+  const anomalies = [], reasons = [], consumption = [], metricRows = [];
+  rows.forEach((row, index) => {
+    const r = resultOf(row), m = r.meter || {}, account = String(row.account ?? m.account ?? ''), name = row.name ?? m.name ?? '', serials = list(row.serials || m.serials), points = list(row.points), flags = r.flags || [];
+    const why = uniqueLines(row.reasons?.length ? row.reasons : flags.map(f => [f.code, f.title, flagObservation(f)].filter(Boolean).join(' · '))) || (r.cls === 'dead' ? 'Месячный ряд практически нулевой.' : r.cls === 'unknown' ? 'Недостаточно полных данных для анализа.' : 'Приоритет по месячной модели.');
+    const recs = uniqueLines(row.recommendations?.length ? row.recommendations : flags.map(f => f.recommendation || MONTH_RECOMMENDATIONS[f.code])) || (r.cls === 'unknown' ? 'Проверить заполнение ПО всех ТУ и исправить исходную выгрузку.' : 'Сверить статус подключения, контрольные показания, схему учёта, пломбы и фактическую нагрузку.');
+    const dates = flags.flatMap(f => [f.first, f.last]).filter(Boolean).sort();
+    const priority = r.journalPriority === 'high' || r.cls === 'red' ? 'high' : r.journalPriority === 'check' || r.cls === 'amber' ? 'check' : 'none';
+    anomalies.push({ priority, cells: [index + 1, JOURNAL_ZONES[r.journalPriority] || 'Нет данных', ZONES[r.monthlyCls || r.cls] || r.cls || '', number(r.monthlyScore ?? r.score), number(r.journalScore), account, name, row.address ?? m.address ?? '', serials, points, list(row.tpNames || m.tpNames), number(m.power), number(r.total), (m.values || []).filter(v => number(v) != null).length, months.length, number(r.baseline), number(r.lossKwh), why, recs, dateCell(dates[0]), dateCell(dates.at(-1))] });
+    for (const f of flags) reasons.push([account, name, serials, points, f.code || '', f.title || '', SOURCE_NAMES[f.source] || f.source || 'Полезный отпуск', number(f.pts), dateCell(f.first), dateCell(f.last), number(f.count), flagObservation(f), f.recommendation || MONTH_RECOMMENDATIONS[f.code] || recs]);
+    if (!flags.length) reasons.push([account, name, serials, points, r.cls === 'dead' ? 'ZERO' : 'DATA', r.cls === 'dead' || r.cls === 'unknown' ? ZONES[r.cls] : 'Качество исходных данных', 'Полезный отпуск', null, null, null, null, why, recs]);
+    else {
+      if (m.incomplete) reasons.push([account, name, serials, points, 'DATA_MISSING', 'Неполные месячные объёмы', 'Полезный отпуск', null, null, null, m.incomplete, `Неполных месяцев: ${m.incomplete}; отсутствующие объёмы не принимались за ноль.`, 'Проверить заполнение ПО всех ТУ и исходную выгрузку.']);
+      if (m.negative) reasons.push([account, name, serials, points, 'DATA_NEGATIVE', 'Отрицательные корректировки', 'Полезный отпуск', null, null, null, null, 'Отрицательные корректировки сохранены в сумме и графике, исключены из поиска остановки ПУ.', 'Сверить корректировки с документами и контрольными показаниями.']);
+    }
+    consumption.push([account, name, points, serials, ...months.map((_, i) => number(m.values?.[i])), number(r.total)]);
+  });
+  const metrics = Array.isArray(report.metrics) ? report.metrics : rows.flatMap(row => (resultOf(row).journal?.latestMetrics || []).map(m => ({ account: row.account ?? resultOf(row).meter?.account ?? '', ...m })));
+  for (const item of metrics) {
+    const values = Array.isArray(item.values) ? Object.fromEntries((item.fields || []).map((key, i) => [key, item.values[i]])) : item.values || {};
+    const period = item.reportPeriod || coverage.instant?.reportPeriod || {};
+    metricRows.push([String(item.account ?? ''), String(item.serial ?? ''), dateCell(item.at), coefficientName(item.coefficientMode || coverage.instant?.coefficientMode), dateCell(period.from), dateCell(period.to), ...INSTANT_METRICS.map(m => number(values[m.key]))]);
+  }
+  summary.splice(6, 0, ['ПУ с последними параметрами в отчёте', metricRows.length]);
+  // Avoid allocating another six-cell array for every row of a large journal.
+  const events = { length: (report.events || []).length, at(index) { const e = report.events[index]; return [String(e.account ?? ''), String(e.serial ?? ''), dateCell(e.at), e.title || e.kind || e.code || 'Событие ПУ', e.description ?? e.info ?? '', e.account ? 'Однозначно сопоставлено с ЛС + ТУ' : e.mappingReason || 'Серийный номер не сопоставлен']; } };
+  return [
+    { title: 'Сводка', subtitle, headers: ['Параметр', 'Значение / пояснение'], widths: [43, 112], rows: summary },
+    { title: 'Аномалии', subtitle, headers: ['№', 'Приоритет журналов', 'Зона месячного анализа', 'Баллы ПО', 'Баллы журналов', 'Лицевой счёт', 'Потребитель / ФИО', 'Адрес', 'Серийные номера ПУ', 'Точки учёта', 'ТП', 'Разрешённая мощность, кВт', 'ПО известных месяцев, кВт·ч', 'Месяцев со значением', 'Месяцев всего', 'Базовый уровень ПО, кВт·ч/мес.', 'Оценка отклонения модели ПО, кВт·ч', 'Конкретные причины отбора', 'Рекомендации к проверке', 'Первое журнальное наблюдение', 'Последнее журнальное наблюдение'], widths: [6, 22, 25, 12, 14, 18, 30, 34, 25, 30, 24, 18, 19, 14, 13, 20, 22, 78, 68, 23, 23], rows: anomalies, priorityColumn: 1, numberColumns: [11, 12, 15, 16], integerColumns: [0, 3, 4, 13, 14] },
+    { title: 'Причины', subtitle, headers: ['Лицевой счёт', 'Потребитель / ФИО', 'Серийные номера ПУ', 'Точки учёта', 'Код признака', 'Признак', 'Источник', 'Вес признака, баллы', 'Начало наблюдения', 'Конец наблюдения', 'Число наблюдений', 'Фактические данные и основание отбора', 'Рекомендуемая проверка'], widths: [18, 30, 25, 30, 15, 35, 22, 16, 23, 23, 17, 100, 75], rows: reasons, integerColumns: [7, 10] },
+    { title: 'События', subtitle: subtitle + ' · все сохранённые C / F / J журнала 46; ЛС добавлен только по однозначной связи', headers: ['Сопоставленный лицевой счёт', 'C · Серийный номер ПУ', 'F · Дата и время', 'Классификация события', 'J · Дополнительная информация полностью', 'Сопоставление / причина отсутствия ЛС'], widths: [24, 25, 25, 38, 112, 70], rows: events, freezeColumns: 2 },
+    { title: 'Потребление', subtitle: subtitle + ' · один ряд на ЛС, все ТУ; пусто = нет полного значения, 0 = известный ноль', headers: ['Лицевой счёт', 'Потребитель / ФИО', 'Точки учёта', 'Серийные номера ПУ', ...months.map(m => monthLabel(m) + ', кВт·ч'), 'ПО известных месяцев, кВт·ч'], widths: [18, 32, 30, 25, ...months.map(() => 19), 24], rows: consumption, numberColumns: Array.from({ length: months.length + 1 }, (_, i) => i + 4), freezeColumns: 4 },
+    { title: 'Параметры ПУ', subtitle: subtitle + ' · последнее измерение каждого ПУ отобранных ЛС, в единицах исходной выгрузки; не расчёт энергии', headers: ['Лицевой счёт', 'Серийный номер ПУ', 'Время измерения', 'Коэффициенты трансформации', 'Период журнала 31 с', 'Период журнала 31 по', ...INSTANT_METRICS.map(m => m.title + (m.unit ? ', ' + m.unit : ''))], widths: [18, 25, 25, 42, 24, 24, ...INSTANT_METRICS.map(() => 22)], rows: metricRows, numberColumns: INSTANT_METRICS.map((_, i) => i + 6), freezeColumns: 2 },
+  ].map(sheet => ({ ...sheet, generated }));
+}
+
+/** Build a styled XLSX in the existing worker, without another workbook dependency. */
+export function buildAnomalyWorkbook(report, XLSX, context = {}) {
+  if (!report || !Array.isArray(report.rows)) throw new Error('Нет результатов анализа выбранной РЭС для выгрузки.');
+  if (!XLSX?.CFB?.utils?.cfb_new || !XLSX.CFB.write) throw new Error('Модуль Excel недоступен. Перезагрузите приложение.');
+  const now = context.generatedAt instanceof Date ? context.generatedAt : new Date(context.generatedAt || Date.now());
+  if (!Number.isFinite(now.getTime())) throw new Error('Некорректная дата формирования отчёта.');
+  const generated = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(now) + ' МСК';
+  const sheets = reportSheets(report, context, generated), archive = XLSX.CFB.utils.cfb_new();
+  XLSX.CFB.utils.cfb_del(archive, '\u0001Sh33tJ5');
+  const encoder = new TextEncoder(); let archiveBytes = 0;
+  const add = (path, content) => { const bytes = content instanceof Uint8Array ? content : encoder.encode(content); archiveBytes += bytes.byteLength; if (archiveBytes > MAX_REPORT_XML_BYTES) throw new Error('Отчёт слишком большой для безопасной выгрузки на устройстве (лимит XML 96 МБ). Уменьшите период исходного журнала и повторите подготовку.'); XLSX.CFB.utils.cfb_add(archive, path, bytes); };
+  add('[Content_Types].xml', XML + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`);
+  add('_rels/.rels', XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>');
+  add('docProps/core.xml', XML + `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Анализ аномалий выбранной РЭС</dc:title><dc:creator>Web_abonent</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now.toISOString()}</dcterms:created></cp:coreProperties>`);
+  add('docProps/app.xml', XML + '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Web_abonent</Application></Properties>');
+  add('xl/workbook.xml', XML + `<workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${sheets.map((s, i) => `<sheet name="${xml(s.title)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><calcPr calcId="191029" fullCalcOnLoad="0"/></workbook>`);
+  add('xl/_rels/workbook.xml.rels', XML + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+  add('xl/styles.xml', STYLES);
+  // Add one sheet at a time: the journal's original workbook is never duplicated.
+  sheets.forEach((sheet, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXML(sheet, generated, MAX_REPORT_XML_BYTES - archiveBytes)));
+  const bytes = XLSX.CFB.write(archive, { fileType: 'zip', type: 'array', compression: true });
+  return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+}

@@ -1,4 +1,5 @@
 import { requestSignal } from './load-session.js';
+import { sourceRoleKeys } from './source.js';
 
 const dbName = 'abonent-prepared-v1';
 const packageKey = ({ source, path, role }) => JSON.stringify([source, path, role]);
@@ -174,7 +175,7 @@ export async function fetchPrepared({ source, path, role, signal, offlineOnly = 
 }
 
 export async function downloadOfflineCopy({ source, resPath, files, signal, onProgress = () => {} }) {
-  if (!files.length || files.some(file => parentPath(file.path) !== resPath || !['registry', 'consumption', 'incoming'].includes(file.role)))
+  if (!files.length || files.some(file => parentPath(file.path) !== resPath || !sourceRoleKeys.includes(file.role)))
     throw new Error('Для этой РЭС нет доступных файлов.');
   const expected = await generation(source, resPath, signal);
   const entries = [];

@@ -2,13 +2,15 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { fetchPrepared, downloadOfflineCopy, listOfflineCopies, deleteOfflineCopy } from '../public/prepared-cache.js';
-import { folderSources, offlineCopyState, withLocalFolders, offlineDirectory, rememberMapDirectories, rememberOfflineFiles } from '../public/offline-copies.js';
+import { folderSources, sourceProgress, offlineCopyState, withLocalFolders, offlineDirectory, rememberMapDirectories, rememberOfflineFiles } from '../public/offline-copies.js';
 import { createLoadSession, requestSignal } from '../public/load-session.js';
 
 const source = 'https://disk.yandex.ru/d/TestOffline';
 const registry = { path: '/ЭС/РЭС/Расширенный список.xlsx', role: 'registry', name: 'Расширенный список.xlsx' };
 const monthly = { path: '/ЭС/РЭС/ПО.xlsx', role: 'consumption', name: 'ПО.xlsx' };
 const incoming = { path: '/ЭС/РЭС/прием.xlsx', role: 'incoming', name: 'прием.xlsx' };
+const instant = { path: '/ЭС/РЭС/31. значения.xlsx', role: 'instant', name: '31. значения.xlsx' };
+const events = { path: '/ЭС/РЭС/46. события.xlsx', role: 'events', name: '46. события.xlsx' };
 const pack = (role, version) => ({ format: 1, role, version });
 const response = (role, version = '1', stale = false) => Response.json(pack(role, version), { headers: { 'X-Prepared-Revision': version, 'X-Prepared-Stale': stale ? '1' : '0' } });
 const options = files => ({ source, resPath: '/ЭС/РЭС', files });
@@ -76,6 +78,39 @@ test('explicit offline choice uses saved data even online and never requests mis
   await deleteOfflineCopy(source, '/ЭС/РЭС');
   await assert.rejects(fetchPrepared({ source, ...registry, offlineOnly:true }), /нет сохранённой копии/);
   assert.equal(blocked.mock.callCount(), 0);
+});
+
+test('journal copies are atomic, respect server blocks and work with an explicit offline choice', async t => {
+  network(t);
+  await downloadOfflineCopy(options([registry,monthly,instant,events]));
+  const [copy]=await listOfflineCopies(source);
+  assert.deepEqual(copy.files.map(file=>file.role).sort(),['consumption','events','instant','registry']);
+  for (const file of [instant,events]) {
+    for (const [status,code] of [[401,'auth_required'],[403,'res_blocked'],[409,'res_changed']]) {
+      t.mock.method(globalThis,'fetch',async()=>Response.json({code,error:'Доступ закрыт.'},{status}));
+      await assert.rejects(fetchPrepared({source,...file}),error=>error.status===status&&error.code===code);
+    }
+  }
+  const blocked=t.mock.method(globalThis,'fetch',()=>{throw new Error('Explicit offline journals must not use the network');});
+  for (const file of [instant,events]) {
+    const result=await fetchPrepared({source,...file,offlineOnly:true});
+    assert.equal(result.offline,true);assert.deepEqual(result.data,pack(file.role,'1'));
+  }
+  assert.equal(blocked.mock.callCount(),0);
+  await deleteOfflineCopy(source,'/ЭС/РЭС');
+  await assert.rejects(fetchPrepared({source,...events,offlineOnly:true}),/нет сохранённой копии/);
+  assert.equal(blocked.mock.callCount(),0);
+});
+
+test('load map counts optional journals only when present and includes them in offline files',()=>{
+  const statuses={registry:{...registry,state:'ready'},consumption:{...monthly,state:'ready'},incoming:{state:'missing'},instant:{state:'missing'},events:{state:'missing'}};
+  assert.deepEqual(sourceProgress({statuses}),{ready:2,total:3});
+  statuses.events={...events,state:'pending'};
+  assert.deepEqual(sourceProgress({statuses}),{ready:2,total:4});
+  statuses.events.state='ready';statuses.instant={...instant,state:'ready'};
+  assert.deepEqual(sourceProgress({statuses}),{ready:4,total:5});
+  assert.deepEqual(folderSources({statuses}).map(file=>file.role),['registry','consumption','instant','events']);
+  assert.deepEqual(folderSources({statuses,load_blocked:true}),[]);
 });
 
 test('deleting one copy keeps other RES and public-folder sources intact', async t => {

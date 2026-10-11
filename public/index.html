@@ -8,9 +8,10 @@
   <title>РОССЕТИ — Кубаньэнерго · Реестр абонентов</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./styles.css?v=13">
+  <link rel="stylesheet" href="./styles.css?v=15">
+  <link rel="stylesheet" href="./journal-ui.css?v=15">
   <script src="./config.js"></script>
-  <script type="module" src="./app.js?v=13"></script>
+  <script type="module" src="./app.js?v=15"></script>
 </head>
 <body>
   <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -21,6 +22,7 @@
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
     <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="m3 3 18 18M2 8a16 16 0 0 1 3-2m4-1a16 16 0 0 1 13 3M5 12a11 11 0 0 1 3-2m5-1a11 11 0 0 1 6 3M8 16a6 6 0 0 1 5-1M12 20h.01"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5zM14 3v6h5M8 13h8M8 17h8"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M5 3h9l5 5v5M14 3v6h5M5 3v18h7M17 13v8m-3-3 3 3 3-3M8 13h3M8 17h3"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M5.3 8a7.5 7.5 0 0 1 12.4-3L20 8M4 16l2.3 3a7.5 7.5 0 0 0 12.4-3"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 6-7 11-7 11S5 16 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2"/></symbol>
@@ -49,6 +51,7 @@
       <button type="button" class="source-indicator" id="consumption-indicator" data-state="idle" data-open-settings aria-label="Потребление: РЭС не выбрана"><svg aria-hidden="true"><use href="#i-consumption"/></svg><i class="status-light" aria-hidden="true"></i></button>
       <button type="button" class="source-indicator" id="incoming-indicator" data-state="idle" data-open-settings aria-label="Приём: РЭС не выбрана"><svg aria-hidden="true"><use href="#i-incoming"/></svg><i class="status-light" aria-hidden="true"></i></button>
       <button type="button" class="source-indicator offline-open" id="offline-open" data-state="off" aria-label="Выбрать РЭС, сохранённую на телефоне" title="На телефоне пока нет сохранённых РЭС" aria-haspopup="dialog" aria-controls="offline-dialog"><svg aria-hidden="true"><use href="#i-wifi-off"/></svg><i class="status-light" aria-hidden="true"></i></button>
+      <button type="button" class="source-indicator anomaly-export" id="anomaly-export" data-state="idle" aria-label="Excel-отчёт по аномалиям: сначала выберите РЭС" title="Сначала выберите РЭС и загрузите данные" disabled><svg aria-hidden="true"><use href="#i-export"/></svg><i class="status-light" aria-hidden="true"></i></button>
       <button type="button" class="source-indicator load-stop" id="load-stop" data-stop-loading aria-label="Остановить загрузку" title="Остановить загрузку" hidden><svg aria-hidden="true"><use href="#i-stop"/></svg><span>Стоп</span></button>
     </div>
   </header>
