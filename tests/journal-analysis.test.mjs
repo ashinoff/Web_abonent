@@ -16,6 +16,14 @@ const electrical = { code: 'J31_REVERSE', title: 'Обратное направ�
 const make = (rows = [row()], records = [record()], journals = {}) => createAnalysisService(indexMonthly({ rows, months, warnings: [] }), records, journals);
 const allOff = { algOff: Object.fromEntries(Object.keys(TUNE_DEFS).map(key => [key, true])) };
 
+test('asynchronous report yields progress, matches ordinary results and can cancel without losing consumption',async()=>{
+  const rows=Array.from({length:240},(_,i)=>row(String(i).padStart(5,'0'))),service=make(rows,[],{}),progress=[];
+  const expected=service.report({}),actual=await service.reportAsync({},{onProgress:p=>progress.push(p)});
+  assert.deepEqual(actual,expected);assert.deepEqual(progress.map(p=>p.done),[0,100,200]);
+  let checks=0;await assert.rejects(service.reportAsync({},{assertCurrent(){if(++checks===3)throw new Error('Отменено');}}),/Отменено/);
+  assert.equal(service.consumer('00000',{}).result.total,840);
+});
+
 test('absent journals retain the exact monthly result and missing source reporting', () => {
   const a = make().consumer('001', {}).result, b = make([row()], [record()], { instant: null, events: null }).consumer('001', {}).result;
   assert.deepEqual(a, b); assert.equal(a.journal, undefined);
@@ -38,7 +46,7 @@ test('serial matching keeps leading zeroes; repeated registry entries of the sam
   assert.ok(safe.flags.some(f => f.source === 'events')); assert.equal(safe.journal.events.length, 1);
   const different = make([row()], [record('123')], { events: eventBook() });
   assert.equal(different.consumer('001', {}).result.journal.events.length, 0); assert.equal(different.report({}).unmatched.events.meters, 1);
-  assert.equal(different.report({}).events.length, 1); assert.equal(different.report({}).events[0].account, ''); assert.match(different.report({}).events[0].mappingReason, /отсутствует в реестре/);
+  assert.equal(different.report({}).events.length, 0); assert.match(different.report({}).unmatched.events.reasons[0].reason, /отсутствует в реестре/);
 });
 
 test('a serial attached to several accounts or points is never attributed to any consumer', () => {
@@ -167,17 +175,17 @@ test('monthly category signatures preserve compound evidence without counting it
   const result = service.consumer('001', {}).result, report = service.report({});
   assert.equal(result.journal.eventRegistrationCount, 3); assert.equal(result.journal.eventGroupCount, 2);
   assert.equal(result.journal.flags.find(f => f.code === 'J46_TERMINAL_COVER').count, 3); assert.equal(result.journal.flags.find(f => f.code === 'J46_MAGNET_DC').count, 2);
-  assert.equal(report.events.length, 3); assert.equal(report.unmatched.events.rows, 1); assert.equal(report.unmatched.events.groups, 1);
+  assert.equal(report.events.length, 2); assert.equal(report.unmatched.events.rows, 1); assert.equal(report.unmatched.events.groups, 1);
   assert.equal(report.coverage.events.totalRegistrations, 4); assert.equal(result.journal.coverage.events.matchedRegistrations, 3);
   assert.equal(result.journal.cases.find(item => item.scenario === 'combined').evidence.eventCount, 3);
 });
 
-test('unknown and stopped monthly histories keep their classes and report concrete data reasons', () => {
+test('unknown and stopped monthly histories keep their classes in cards and are excluded from XLSX selection', () => {
   for (const [values, cls, reason] of [[Array(9).fill(null), 'unknown', /недостаточно данных/], [Array(9).fill(0), 'dead', /не превышают 3/]]) {
     const service = make([row('001', 'P1', values)], [record()], { events: eventBook() });
     const result = service.consumer('001', {}).result;
     assert.equal(result.cls, cls); assert.equal(result.monthlyCls, cls); assert.equal(result.journalPriority, 'check');
-    assert.ok(service.report({}).rows[0].reasons.some(text => reason.test(text)));
+    assert.equal(service.report({}).rows.length, 0); assert.equal(service.report({}).events.length, 0); assert.equal(service.report({}).counts[cls], 1);
   }
 });
 

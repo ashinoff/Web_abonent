@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import XLSX from '@e965/xlsx';
-import { buildAnomalyWorkbook } from '../public/anomaly-report.js';
+import { buildAnomalyWorkbook, planAnomalyWorkbooks, buildAnomalyWorkbookPart } from '../public/anomaly-report.js';
 
 const months = [{ y: 2026, m: 0 }, { y: 2026, m: 1 }, { y: 2026, m: 2 }];
 const row = (account = '000001') => ({
@@ -18,6 +18,46 @@ const fixture = () => ({ months, rows: [row()], counts: { accounts: 4, selected:
 const context = { res: 'Учебный РЭС', sourceName: 'Учебный источник', generatedAt: '2026-10-11T07:19:00Z', files: { registry: 'Расширенный список.xlsx', consumption: { name: 'ПО.xlsx' }, instant: '31.xlsx', events: '46.xlsx' } };
 function read(report = fixture()) { const bytes = buildAnomalyWorkbook(report, XLSX, context); return { bytes, book: XLSX.read(bytes, { type: 'array', cellStyles: true }) }; }
 function part(bytes, path) { const cfb = XLSX.CFB.read(bytes, { type: 'array' }), index = cfb.FullPaths.findIndex(p => p.endsWith('/' + path)); assert.ok(index >= 0, path); return new TextDecoder().decode(cfb.FileIndex[index].content); }
+const table = (book, name) => XLSX.utils.sheet_to_json(book.Sheets[name], { header:1, range:5 });
+
+test('bounded multipart workbooks keep each selected account and every detail once, with all seven sheets', async () => {
+  const report = fixture(); report.rows = Array.from({length:8},(_,i)=>row('00000'+(i+1)));
+  report.events = report.rows.flatMap((row,r)=>Array.from({length:45},(_,i)=>({account:row.account, serial:`ПУ-${r}-${i}`, at:'2026-02-01T10:15:00', description:`${r}/${i} · `+'Вскрытие & точные данные. '.repeat(60)})));
+  report.metrics = report.rows.map(row=>({ account:row.account,serial:row.account,at:'2026-02-02T10:00:00',values:{current1:2,active1:-.3} }));
+  report.caseDetails = report.rows.map(row=>({ id:row.account, account:row.account, serial:row.account, scenario:'combined', priority:'high', months:[{month:'2026-01',value:100},{month:'2026-02',value:30}], comparisons:{}, evidence:{}, detail:'Событие и снижение.' }));
+  const budget = 350000, progress = [], plan = await planAnomalyWorkbooks(report,context,{maxBytes:budget,onProgress:p=>progress.push(p)});
+  assert.ok(plan.parts.length>1); assert.equal(plan.count,8);
+  const accounts=[], events=[], parameters=[], cases=[];
+  for(let i=0;i<plan.parts.length;i++) {
+    const bytes=buildAnomalyWorkbookPart(plan,i,XLSX),book=XLSX.read(bytes,{type:'array'});
+    assert.equal(book.SheetNames.length,7);
+    const xmlSize=XLSX.CFB.read(bytes,{type:'array'}).FileIndex.reduce((sum,file)=>sum+(file.content?.byteLength||0),0);
+    assert.ok(xmlSize<=budget,`${xmlSize} <= ${budget}`);
+    accounts.push(...table(book,'Аномалии').map(row=>row[5]));
+    events.push(...table(book,'События').map(row=>[row[0],row[1],row[7]]));
+    parameters.push(...table(book,'Параметры ПУ').map(row=>row[0]));
+    cases.push(...table(book,'Сопоставления').map(row=>[row[1],row[8]]));
+    const summary=table(book,'Сводка');
+    assert.ok(summary.some(row=>row[0]==='Часть отчёта'&&row[1]===`${i+1} из ${plan.parts.length}`));
+  }
+  assert.deepEqual(accounts,report.rows.map(row=>row.account));
+  assert.deepEqual(events,report.events.map(e=>[e.account,e.serial,e.at+' · '+e.description]));
+  assert.deepEqual(parameters,report.rows.map(row=>row.account));
+  assert.deepEqual(cases,report.rows.flatMap(row=>[[row.account,'2026-01'],[row.account,'2026-02']]));
+});
+
+test('one account with many events continues in several files without truncation or lost registrations',async()=>{
+  const report=fixture();report.events=Array.from({length:180},(_,i)=>({...report.events[0],serial:String(i).padStart(8,'0'),description:'Описание без сокращения & '.repeat(65)}));
+  const plan=await planAnomalyWorkbooks(report,context,{maxBytes:250000});assert.ok(plan.parts.length>1);
+  const serials=[];
+  for(let i=0;i<plan.parts.length;i++) {
+    const book=XLSX.read(buildAnomalyWorkbookPart(plan,i,XLSX),{type:'array'});
+    assert.equal(book.Sheets.Аномалии.F6.v,'000001');assert.equal(book.Sheets.Потребление.E6.v,120.25);
+    const rows=table(book,'События');serials.push(...rows.map(row=>row[1]));
+    assert.ok(rows.every(row=>row[7]===report.events[0].at+' · '+report.events[0].description));
+  }
+  assert.deepEqual(serials,report.events.map(e=>e.serial));
+});
 
 test('anomaly export preserves exact identifiers, separate monthly/journal scores, observations and monthly blanks', () => {
   const { bytes, book } = read(); assert.ok(bytes instanceof Uint8Array); assert.deepEqual(book.SheetNames, ['Сводка', 'Аномалии', 'Причины', 'События', 'Потребление', 'Параметры ПУ', 'Сопоставления']);
@@ -67,12 +107,21 @@ test('empty report remains usable and missing journals are stated explicitly', (
   const summary = XLSX.utils.sheet_to_json(book.Sheets.Сводка, { header: 1, range: 4 }); assert.ok(summary.some(r => r[0] === 'ЛС в отчёте' && r[1] === 0)); assert.ok(summary.some(r => r[0] === 'Журнал 46: доступность' && r[1].includes('Не загружен')));
 });
 
-test('service selection is retained including green rows with data issues; zero and unknown have concrete reasons', () => {
-  const quality = row('000002'); quality.reasons = ['Неполные месяцы: 1; отсутствующие объёмы не принимались за ноль.']; quality.result = { ...quality.result, cls: 'green', flags: [], journalPriority: 'none' };
-  const zero = row('000003'); zero.reasons = []; zero.result = { ...zero.result, cls: 'dead', flags: [], journalPriority: 'none' };
-  const unknown = row('000004'); unknown.reasons = []; unknown.result = { ...unknown.result, cls: 'unknown', flags: [], journalPriority: 'none' };
-  const { book } = read({ months, rows: [quality, zero, unknown], events: [] }); const reasons = XLSX.utils.sheet_to_json(book.Sheets.Причины, { header: 1, range: 5 });
-  assert.equal(reasons.length, 3); assert.equal(reasons[0][0], '000002'); assert.equal(reasons[0][5], 'Качество исходных данных'); assert.match(reasons[0][11], /Неполные месяцы/); assert.equal(reasons[1][0], '000003'); assert.match(reasons[1][11], /нулевой/); assert.equal(reasons[2][0], '000004'); assert.match(reasons[2][11], /Недостаточно/);
+test('export includes only scored amber/red cards and removes their unrelated detail rows', () => {
+  const report = fixture(), quality = row('000002'), zero = row('000003'), unknown = row('000004'), noScore = row('000005');
+  quality.result.cls = 'green'; quality.result.journalPriority = 'high';
+  zero.result.cls = 'dead'; unknown.result.cls = 'unknown'; noScore.result.score = 0;
+  report.rows.push(quality, zero, unknown, noScore);
+  for (const account of ['000002', '000003', '000004', '000005', '']) {
+    report.events.push({ ...report.events[0], account, serial: 'EXCLUDED' });
+    (report.metrics ||= []).push({ account, serial: 'EXCLUDED', values: {} });
+    (report.caseDetails ||= []).push({ account, serial: 'EXCLUDED', comparisons: {} });
+  }
+  const { book } = read(report);
+  assert.equal(book.Sheets.Аномалии.F6.v, '000001'); assert.equal(book.Sheets.Аномалии.F7, undefined);
+  assert.equal(book.Sheets.События.B7, undefined);
+  assert.equal(book.Sheets['Параметры ПУ'].A6, undefined); assert.equal(book.Sheets.Сопоставления.B6, undefined);
+  for (const sheet of Object.values(book.Sheets)) assert.doesNotMatch(JSON.stringify(sheet), /EXCLUDED|000002|000003|000004|000005/);
 });
 
 test('unmatched source identities include reasons and counts rather than object placeholders', () => {
@@ -81,14 +130,14 @@ test('unmatched source identities include reasons and counts rather than object 
   assert.ok(summary.some(r => r[0] === 'Журнал 46: причины несопоставления' && r[1] === 'Серийный номер связан с несколькими ЛС или ТУ — 2 ПУ'));
 });
 
-test('all latest parameters and unmatched events are exported with coverage and load failures', () => {
+test('all selected latest parameters retain coverage and load failures; unmatched events remain summary counts', () => {
   const report = fixture(); report.coverage.instant.reportPeriod = { from: '2026-01-01', to: '2026-03-31' }; report.coverage.instant.coefficientMode = 'unscaled';
   report.metrics = Array.from({ length: 55 }, (_, i) => ({ account: '000001', serial: String(i).padStart(8, '0'), at: '2026-03-01T10:15:00', values: { active1: -0.2, voltage1: 230.5, current1: 2, neutralCurrent: 1.2 }, coefficientMode: 'unscaled' }));
   report.events.push({ account: '', serial: '00099999', at: '2026-03-01T11:30:00', description: 'Вскрытый элемент устройства "Корпус"', mappingReason: 'Серийный номер отсутствует в реестре.' });
   const bytes = buildAnomalyWorkbook(report, XLSX, { ...context, journalStates: { events: { state: 'error', error: 'Не удалось обновить источник' } } }), book = XLSX.read(bytes, { type: 'array' });
   const parameters = XLSX.utils.sheet_to_json(book.Sheets['Параметры ПУ'], { header: 1, range: 4 }); assert.equal(parameters.length, 56); assert.equal(parameters[1][0], '000001'); assert.equal(parameters[1][1], '00000000'); assert.equal(parameters[1][3], 'Без коэффициентов трансформации');
   const active = parameters[0].indexOf('Активная мощность, фаза 1, кВт'), voltage = parameters[0].indexOf('Напряжение, фаза 1, В'); assert.equal(parameters[1][active], -0.2); assert.equal(parameters[1][voltage], 230.5);
-  assert.equal(book.Sheets.События.A7, undefined); assert.equal(book.Sheets.События.B7.v, '00099999'); assert.equal(book.Sheets.События.K7.v, 'Серийный номер отсутствует в реестре.');
+  assert.equal(book.Sheets.События.A7, undefined); assert.equal(book.Sheets.События.B7, undefined); assert.equal(book.Sheets.События.K7, undefined);
   const summary = XLSX.utils.sheet_to_json(book.Sheets.Сводка, { header: 1, range: 4 }); assert.ok(summary.some(r => r[0] === 'ПУ с последними параметрами в отчёте' && r[1] === 55)); assert.ok(summary.some(r => r[0] === 'Журнал 46: состояние загрузки' && r[1] === 'Ошибка: Не удалось обновить источник'));
 });
 

@@ -2,10 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
-import { indexChartEvents, indexChartCases, journalCaseDetailHTML, journalCaseTitle, mountChart } from '../public/analysis-chart.js';
+import { indexChartEvents, indexChartCases, journalCaseDetailHTML, journalCaseTitle, mountChart, chartWindow } from '../public/analysis-chart.js';
 import { initAnalysisUI } from '../public/analysis-ui.js';
 
 const months = [{ y:2025,m:11 }, { y:2026,m:0 }, { y:2026,m:1 }];
+test('zoomed chart browses both directions, preserves width and reveals the correct month/event', () => {
+  const timeline = Array.from({length:57}, (_,i) => ({y:2022+Math.floor(i/12),m:i%12})), values = timeline.map((_,i)=>100+i);
+  const window = new Window(), host = window.document.createElement('section');
+  mountChart(host,{ months:timeline, values, events:[{serial:'TEST',at:'2023-01-01T10:00:00',kind:'opening'}] });
+  const button = action => host.querySelector(`[data-zoom="${action}"]`), range = () => [Number(host.querySelector('.month-scrubber').min),Number(host.querySelector('.month-scrubber').max)];
+  button('in').click(); assert.deepEqual(range(),[28,56]);
+  assert.equal(button('right').disabled,true); assert.equal(button('left').disabled,false);
+  button('left').click(); assert.deepEqual(range(),[13,41]);
+  button('left').click(); assert.deepEqual(range(),[0,28]); assert.equal(button('left').disabled,true);
+  assert.equal(host.querySelectorAll('.plot-event').length,1);
+  button('right').click(); assert.deepEqual(range(),[15,43]);
+  button('out').click(); assert.deepEqual(range(),[0,56]);
+  assert.ok(button('left').closest('[data-no-swipe]'));
+  assert.deepEqual(values,timeline.map((_,i)=>100+i));
+});
+test('window shifts clamp at the real period boundaries and zoom out works at the earliest edge', () => {
+  let range = {start:0,end:8};
+  range = chartWindow(range,'out',57,0); assert.deepEqual(range,{start:0,end:17});
+  range = chartWindow(range,'right',57); assert.deepEqual(range,{start:9,end:26});
+  range = chartWindow(range,'left',57); assert.deepEqual(range,{start:0,end:17});
+  assert.deepEqual(chartWindow(range,'left',57),range);
+  assert.deepEqual(chartWindow({start:48,end:56},'right',57),{start:48,end:56});
+  assert.deepEqual(chartWindow({start:0,end:1},'in',2),{start:0,end:1});
+});
 const event = (at, kind = 'opening', description = 'Вскрытый элемент устройства "Корпус"') => ({ serial:'TEST-001',at,kind,description,title:'Событие ПУ',code:'J46_CASE' });
 const monthlyEvent = (first,last,count=120000,overrides={}) => ({...event(first),first,last,month:first.slice(0,7),count,groupId:'private-month-group',days:[[first.slice(0,10),first,first,count-1],[last.slice(0,10),last,last,1]],examples:[{at:first,description:'Вскрытый элемент устройства "Корпус"'},{at:last,description:'Повторная регистрация'}],examplesTruncated:true,...overrides});
 const chart = (events, cases = []) => {

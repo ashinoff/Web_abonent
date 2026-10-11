@@ -3,6 +3,7 @@ import { normalizeSettings } from './analysis-settings.js';
 import { TUNE_HINT, LEVEL_NAMES } from './analysis-tuning.js';
 import { INSTANT_METRICS } from './journals.js';
 import { flagObservation } from './analysis-observations.js';
+import { idKey } from './core.js';
 
 const MAX_ROWS = 1048576, MAX_COLUMNS = 16384, MAX_TEXT = 32767;
 const MAX_REPORT_XML_BYTES = 96 * 1024 * 1024;
@@ -95,6 +96,15 @@ function rowHeight(cells, widths) {
   // Excel caps a row at 409 points. Full text remains in the cell at that cap.
   return Math.min(409, Math.max(20, lines * 14 + 4));
 }
+function dataRowXML(row, index, sheet) {
+  const cells = Array.isArray(row) ? row : row.cells, rowNumber = index + 6;
+  const height = rowHeight(cells, sheet.widths || []), numeric = new Set(sheet.numberColumns), integers = new Set(sheet.integerColumns);
+  return `<row r="${rowNumber}"${height > 20 ? ` ht="${height}" customHeight="1"` : ''}>` + cells.map((value, col) => {
+    let style = index % 2 ? 9 : 3;
+    if (col === sheet.priorityColumn) style = row.priority === 'high' ? 10 : row.priority === 'check' ? 11 : 12;
+    return cellXML(value, col, rowNumber, style, integers.has(col) ? 5 : numeric.has(col) ? 4 : 5);
+  }).join('') + '</row>';
+}
 function sheetXML({ title, subtitle, headers, widths = [], rows, priorityColumn = -1, numberColumns = [], integerColumns = [], freezeColumns = 0 }, generated, budget) {
   if (headers.length > MAX_COLUMNS) throw new Error(`Лист «${title}» превышает лимит столбцов Excel.`);
   if (rows.length + 5 > MAX_ROWS) throw new Error(`Лист «${title}» превышает лимит строк Excel. Уменьшите период или объём выгрузки.`);
@@ -140,13 +150,16 @@ function preExistingText(value) {
   return [`Ранее низкий месяц: ${value.month || 'не указан'}`, number(value.value) != null ? `ПО ${value.value} кВт·ч` : 'ПО не указан', number(value.additionalDropPercent) != null ? `Дополнительное снижение ${value.additionalDropPercent}%` : '', value.newDecline ? 'Есть новое снижение по критерию' : 'Новое снижение по критерию отсутствует', value.reason || ''].filter(Boolean).join(' · ');
 }
 function casesTable(cases) {
-  const groups = cases.map(item => ({ item, months: item.months?.length ? item.months : [item] }));
-  const length = groups.reduce((sum, group) => sum + group.months.length, 0);
-  let cursor = 0, start = 0;
+  let length = 0;
+  const groups = cases.map(item => { const months = item.months?.length ? item.months : [item], start = length; length += months.length; return { item, months, start }; });
+  let cursor = 0;
   return { length, at(index) {
-    if (index < start) { cursor = 0; start = 0; }
-    while (index >= start + groups[cursor].months.length) { start += groups[cursor].months.length; cursor++; }
-    const { item } = groups[cursor], month = groups[cursor].months[index - start], comparisons = month.comparisons || item.comparisons || {};
+    if (index < groups[cursor].start || index >= groups[cursor].start + groups[cursor].months.length) {
+      let low = 0, high = groups.length;
+      while (low < high) { const middle = (low + high) >>> 1; if (groups[middle].start <= index) low = middle + 1; else high = middle; }
+      cursor = low - 1;
+    }
+    const { item, start } = groups[cursor], month = groups[cursor].months[index - start], comparisons = month.comparisons || item.comparisons || {};
     const evidence = month.evidence || item.evidence || {}, electrical = evidence.electrical || [], events = evidence.events || [];
     const season = month.seasonalAlternative ?? item.seasonalAlternative;
     const seasonal = typeof season === 'string' ? season : season === true ? 'Есть сезонная альтернатива по прошлогоднему сравнению' : comparisons.yearAgo?.available ? 'Не отмечена по доступному прошлогоднему сравнению' : 'Нет пригодного прошлогоднего сравнения';
@@ -164,7 +177,7 @@ function casesTable(cases) {
   } };
 }
 function reportSheets(report, context, generated) {
-  // The service owns selection: it also selects missing/negative data for repair.
+  // Export only scored yellow/red cards and evidence belonging to those LS.
   const rows = report.rows, months = report.months || [], settings = normalizeSettings(report.settings || context.settings);
   const coverage = report.coverage || {}, unmatched = report.unmatched || {}, cases = report.caseDetails || [];
   const caseRows = casesTable(cases);
@@ -176,6 +189,7 @@ function reportSheets(report, context, generated) {
     ['РЭС', res], ['Источник', context.sourceName || context.source || 'Выбранный источник'],
     ['Режим данных', context.sourceMode === 'offline' ? 'Сохранённая копия на устройстве' : 'Подготовленные данные выбранной РЭС'],
     ['ЛС в анализе', number(report.counts?.accounts) ?? rows.length], ['ЛС в отчёте', rows.length],
+    ['Отбор для выгрузки', 'Только жёлтые и красные карточки месячного анализа с положительными баллами. Причины, параметры, события и сопоставления относятся только к этим ЛС.'],
     ['Месячных групп журнала 46 в отчёте', (report.events || []).length],
     ['Регистраций 46 в подготовленных группах', number(coverage.events?.totalRegistrations) ?? registrations],
     ['Что означает число регистраций 46', 'Количество пригодных строк регистрации исходного журнала, сведённых в месячные группы. Это не число независимых вскрытий и не число уникальных троек C/F/J. Полные исходные описания всех строк в базе не сохраняются.'],
@@ -248,14 +262,76 @@ function reportSheets(report, context, generated) {
   ].map(sheet => ({ ...sheet, generated }));
 }
 
-/** Build a styled XLSX in the existing worker, without another workbook dependency. */
-export function buildAnomalyWorkbook(report, XLSX, context = {}) {
+function selectedReport(report) {
   if (!report || !Array.isArray(report.rows)) throw new Error('Нет результатов анализа выбранной РЭС для выгрузки.');
-  if (!XLSX?.CFB?.utils?.cfb_new || !XLSX.CFB.write) throw new Error('Модуль Excel недоступен. Перезагрузите приложение.');
+  const rows = report.rows.filter(row => { const r = resultOf(row); return ['red', 'amber'].includes(r.cls) && r.score > 0; });
+  const accounts = new Set(rows.map(row => idKey(row.account ?? resultOf(row).meter?.account)));
+  const selected = entries => (entries || []).filter(entry => accounts.has(idKey(entry.account)));
+  return { ...report, rows, counts: { ...report.counts, selected: rows.length }, events: selected(report.events), metrics: selected(report.metrics), caseDetails: selected(report.caseDetails) };
+}
+function reportClock(context) {
   const now = context.generatedAt instanceof Date ? context.generatedAt : new Date(context.generatedAt || Date.now());
   if (!Number.isFinite(now.getTime())) throw new Error('Некорректная дата формирования отчёта.');
   const generated = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(now) + ' МСК';
-  const sheets = reportSheets(report, context, generated), archive = XLSX.CFB.utils.cfb_new();
+  return { now, generated };
+}
+
+/** Plan bounded XLSX files without allocating their ZIP/XML buffers together. */
+export async function planAnomalyWorkbooks(report, context = {}, { maxBytes = 12 * 1024 * 1024, onProgress = () => {}, assertCurrent = () => {} } = {}) {
+  report = selectedReport(report);
+  const clock = reportClock(context), sheets = reportSheets(report, context, clock.generated), encoder = new TextEncoder();
+  const columns = [null, 5, 0, 0, 0, 0, 1], costs = sheets.map(sheet => new Uint32Array(sheet.rows.length));
+  const groups = new Map(report.rows.map(row => [idKey(row.account ?? resultOf(row).meter?.account), sheets.map(() => [])]));
+  let processed = 0, total = sheets.slice(1).reduce((sum, sheet) => sum + sheet.rows.length, 0);
+  for (let s = 1; s < sheets.length; s++) for (let i = 0; i < sheets[s].rows.length; i++) {
+    assertCurrent();
+    const row = sheets[s].rows.at(i), cells = Array.isArray(row) ? row : row.cells, group = groups.get(idKey(cells[columns[s]]));
+    if (!group) throw new Error('Свидетельство отчёта не связано с отобранным потребителем.');
+    group[s].push(i); costs[s][i] = encoder.encode(dataRowXML(row, i, sheets[s])).byteLength;
+    if (++processed % 500 === 0) { onProgress({ phase: 'parts', done: processed, total }); await new Promise(resolve => setTimeout(resolve, 0)); }
+  }
+  // Reserve space for part labels and Excel row numbers. All evidence is measured
+  // as escaped UTF-8 worksheet XML, rather than estimating its compressed size.
+  const overhead = 8192 + sheets.reduce((sum, sheet, i) => sum + sheetXML({ ...sheet, rows: i ? [] : sheet.rows }, clock.generated, MAX_REPORT_XML_BYTES).byteLength, 0);
+  const budget = Math.min(MAX_REPORT_XML_BYTES, maxBytes);
+  if (!Number.isFinite(budget) || budget <= overhead) throw new Error('Недостаточный размер части Excel-отчёта.');
+  const parts = []; let current;
+  const begin = () => { current = { indices: sheets.map(() => []), accounts: new Set(), xmlBytes: overhead }; parts.push(current); };
+  const add = (s, i) => { current.indices[s].push(i); current.xmlBytes += costs[s][i]; };
+  begin();
+  for (const [account, group] of groups) {
+    const cardCost = [...group[1].map(i => costs[1][i]), ...group[4].map(i => costs[4][i])].reduce((sum, bytes) => sum + bytes, 0);
+    const groupCost = group.reduce((sum, indices, s) => sum + indices.reduce((n, i) => n + costs[s][i], 0), 0);
+    if (current.accounts.size && current.xmlBytes + groupCost > budget) begin();
+    const addCard = () => { current.accounts.add(account); for (const s of [1, 4]) for (const i of group[s]) add(s, i); };
+    if (overhead + cardCost > budget) throw new Error('Карточка потребителя превышает размер части Excel. Проверьте длину исходных описаний.');
+    addCard();
+    for (const s of [2, 3, 5, 6]) for (const i of group[s]) {
+      if (overhead + cardCost + costs[s][i] > budget) throw new Error('Одна строка свидетельства превышает размер части Excel. Проверьте исходное описание.');
+      if (current.xmlBytes + costs[s][i] > budget) { begin(); addCard(); }
+      add(s, i);
+    }
+  }
+  return { count: report.rows.length, ...clock, parts: parts.map((part, index) => ({
+    count: part.accounts.size, xmlBytes: part.xmlBytes,
+    sheets: sheets.map((sheet, s) => ({ ...sheet, subtitle: `${sheet.subtitle} · часть ${index + 1} из ${parts.length}`, rows: s ? {
+      length: part.indices[s].length, at: i => sheet.rows.at(part.indices[s][i]),
+    } : [...sheet.rows, ['Часть отчёта', `${index + 1} из ${parts.length}`], ['ЛС в этой части', part.accounts.size], ['Чтение нескольких частей', 'При большом числе свидетельств одна карточка и её потребление повторяются в частях с продолжением. Не суммируйте повторённое потребление между файлами. Все строки свидетельств распределены без пропусков.']] })),
+  })) };
+}
+
+/** Build a styled XLSX in the existing worker, without another workbook dependency. */
+export function buildAnomalyWorkbook(report, XLSX, context = {}) {
+  const clock = reportClock(context);
+  return writeWorkbook(reportSheets(selectedReport(report), context, clock.generated), XLSX, clock);
+}
+export function buildAnomalyWorkbookPart(plan, index, XLSX, onProgress = () => {}) {
+  if (!plan?.parts?.[index]) throw new Error('Часть отчёта недоступна. Сформируйте отчёт заново.');
+  return writeWorkbook(plan.parts[index].sheets, XLSX, plan, onProgress);
+}
+function writeWorkbook(sheets, XLSX, { now, generated }, onProgress = () => {}) {
+  if (!XLSX?.CFB?.utils?.cfb_new || !XLSX.CFB.write) throw new Error('Модуль Excel недоступен. Перезагрузите приложение.');
+  const archive = XLSX.CFB.utils.cfb_new();
   XLSX.CFB.utils.cfb_del(archive, '\u0001Sh33tJ5');
   const encoder = new TextEncoder(); let archiveBytes = 0;
   const add = (path, content) => { const bytes = content instanceof Uint8Array ? content : encoder.encode(content); archiveBytes += bytes.byteLength; if (archiveBytes > MAX_REPORT_XML_BYTES) throw new Error('Отчёт слишком большой для безопасной выгрузки на устройстве (лимит XML 96 МБ). Уменьшите период исходного журнала и повторите подготовку.'); XLSX.CFB.utils.cfb_add(archive, path, bytes); };
@@ -267,7 +343,7 @@ export function buildAnomalyWorkbook(report, XLSX, context = {}) {
   add('xl/_rels/workbook.xml.rels', XML + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   add('xl/styles.xml', STYLES);
   // Add one sheet at a time: the journal's original workbook is never duplicated.
-  sheets.forEach((sheet, i) => add(`xl/worksheets/sheet${i + 1}.xml`, sheetXML(sheet, generated, MAX_REPORT_XML_BYTES - archiveBytes)));
+  sheets.forEach((sheet, i) => { onProgress({ phase: 'file', done: i, total: sheets.length }); add(`xl/worksheets/sheet${i + 1}.xml`, sheetXML(sheet, generated, MAX_REPORT_XML_BYTES - archiveBytes)); });
   const bytes = XLSX.CFB.write(archive, { fileType: 'zip', type: 'array', compression: true });
   return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 }

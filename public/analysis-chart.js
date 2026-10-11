@@ -89,13 +89,28 @@ export function indexChartEvents(months, events = []) {
   return { byMonth, outsidePeriod, outsideGroups };
 }
 const eventDate = at => String(at || '').replace(/^(\d{4})-(\d{2})-(\d{2})T?/, '$3.$2.$1 ').trim();
+// Keep the window width when browsing; zoom expands at either boundary too.
+export function chartWindow({ start, end }, action, count, selected = end) {
+  const length = end - start + 1;
+  if (action === 'all') return { start: 0, end: count - 1 };
+  let nextStart = start, nextLength = length;
+  if (action === 'left' || action === 'right') nextStart += (action === 'left' ? -1 : 1) * Math.max(1, Math.round(length / 2));
+  if (action === 'in' || action === 'out') {
+    nextLength = Math.min(count, action === 'in' ? Math.max(3, Math.round(length / 2)) : length * 2);
+    const anchor = Math.max(start, Math.min(end, selected));
+    const position = length > 1 ? (anchor - start) / (length - 1) : .5;
+    nextStart = anchor - Math.round(position * (nextLength - 1));
+  }
+  nextStart = Math.max(0, Math.min(count - nextLength, nextStart));
+  return { start: nextStart, end: nextStart + nextLength - 1 };
+}
 export function mountChart(host, { months, values, group = null, baseline = null, shift = null, title = 'Потребление', scenario = null, events = [], cases = [] }) {
   const years = splitYears(months, values);
   const journal = indexChartEvents(months, events), hasEvents = journal.byMonth.size > 0;
   const joint = indexChartCases(months,cases), hasCases = joint.byMonth.size > 0;
   let mode = 'timeline', selectedMonth = months.at(-1)?.m ?? 0;
   let start = 0, end = months.length - 1, selected = end, smoothing = 0;
-  const controls = `<div class="chart-controls"><button type="button" data-zoom="in" aria-label="Сузить период">＋</button><button type="button" data-zoom="out" aria-label="Расширить период">−</button><button type="button" data-zoom="left" aria-label="Предыдущий период">←</button><button type="button" data-zoom="right" aria-label="Следующий период">→</button><button type="button" data-zoom="all">Весь период</button></div>`;
+  const controls = `<div class="chart-controls" data-no-swipe><button type="button" data-zoom="in" aria-label="Сузить период">＋</button><button type="button" data-zoom="out" aria-label="Расширить период">−</button><button type="button" data-zoom="left" aria-label="Предыдущий период">←</button><button type="button" data-zoom="right" aria-label="Следующий период">→</button><button type="button" data-zoom="all">Весь период</button></div>`;
   host.innerHTML = `<div class="chart-title"><h3>${escape(title)}</h3><span>кВт·ч</span></div><div class="chart-mode" role="group" aria-label="Вид графика"><button type="button" data-chart-mode="timeline" aria-pressed="true">Весь период</button><button type="button" data-chart-mode="yearly" aria-pressed="false">По годам</button></div><div class="chart-legend timeline-legend"><span class="legend-fact">Полезный отпуск</span>${group ? '<span class="legend-group">Медиана группы</span>' : ''}${baseline != null ? '<span class="legend-base">Базовый уровень</span>' : ''}${shift != null ? '<span class="legend-shift">Изменение профиля</span>' : ''}${scenario ? '<span class="legend-scenario">Сценарий</span>' : ''}</div><div class="chart-legend year-legend" hidden></div><div class="plot" data-no-swipe></div>${controls}<div class="chart-settings"><label>Сглаживание<select data-smoothing><option value="0">Без сглаживания</option><option value="3">3 месяца</option><option value="6">6 месяцев</option></select></label><span class="chart-window"></span></div><label class="chart-scrubber"><span class="sr-only">Месяц на графике</span><input class="month-scrubber" type="range" min="0" max="${end}" value="${end}" step="1"></label><div class="chart-reading" aria-live="polite"></div><p class="chart-note">Нажмите на график, чтобы увидеть месяц. Пропуски — нет полных данных; точки у нуля — ≤ 3 кВт·ч. Сглаживание и масштаб меняют только график.</p>`;
   host.querySelector('.chart-reading').insertAdjacentHTML('afterend', `<div class="chart-event-legend" ${hasEvents ? '' : 'hidden'} aria-label="Обозначения событий">${Object.entries(EVENT_KINDS).filter(([kind]) => [...journal.byMonth.values()].some(list => list.some(event => event.kind === kind))).map(([kind, label]) => `<span data-event-kind="${kind}">${label}</span>`).join('')}${[...journal.byMonth.values()].some(list=>list.some(isMonthlyEvent)) ? '<small>Одна метка 46 — одна месячная группа ПУ и категорий; число у метки — регистрации журнала.</small>' : ''}</div><section class="chart-event-details" aria-live="polite" hidden></section>${journal.outsidePeriod ? `<p class="chart-event-outside">Записей журналов вне периода потребления: ${journal.outsidePeriod}${journal.outsideGroups ? ` · месячных групп 46: ${journal.outsideGroups}` : ''}. На этот график они не переносятся.</p>` : ''}`);
   host.querySelector('.chart-event-legend').insertAdjacentHTML('afterend', `<div class="chart-case-legend" ${hasCases ? '' : 'hidden'}><span>Сопоставление журналов и ПО</span><small>Выделен календарный месяц сопоставления; месячные объёмы исходные.</small></div><section class="chart-case-details" aria-live="polite" hidden></section>`);
@@ -132,8 +147,8 @@ export function mountChart(host, { months, values, group = null, baseline = null
       const cx = monthly.length ? Math.max(56,Math.min(plotWidth-24,x+(items.length>1 ? (k/(items.length-1)-.5)*width : 0))) : x+(k-(items.length-1)/2)*15;
       const label = event ? monthlyEventLabel(event) : `${ymLabel(months[i])}: ${EVENT_KINDS[kind]}, ${kind==='electrical' ? 'отметок измерений' : 'записей'} ${count}`;
       const examples = event ? (event.examples || []).slice(0,3).map(example=>`${eventDate(example.at)}: ${String(example.description || '').slice(0,140)}`).join('; ') : '';
-      const shape = kind === 'intrusion' ? `<path d="M${cx},${y-5}l5,9h-10Z"/>` : kind === 'magnetic' ? `<circle cx="${cx}" cy="${y}" r="4.5"/>` : `<rect x="${cx-4}" y="${y-4}" width="8" height="8" rx="1"/>`;
-      return `<g class="plot-event" data-event-kind="${kind}" ${event ? 'data-monthly-group="true"' : ''} ${yearly ? `data-calendar-month="${months[i].m}" data-event-year="${months[i].y}"` : `data-month="${i}"`} tabindex="0" role="button" aria-label="${escape(label)}"><title>${escape(label)}${examples ? ` Фактические примеры: ${escape(examples)}` : ''}</title><rect class="plot-event-target" x="${cx-9}" y="${y-10}" width="18" height="20"/>${shape}${count > 1 ? `<text x="${cx}" y="${y+17}">${event && count>999 ? '999+' : count}</text>` : ''}</g>`;
+      const shape = kind === 'intrusion' ? `<path d="M${cx-5},${y-8}h12l-3,5l3,5h-12Z"/><path class="plot-event-pole" d="M${cx-5},${y-8}v20"/>` : kind === 'magnetic' ? `<circle cx="${cx}" cy="${y}" r="6"/>` : `<rect x="${cx-5}" y="${y-5}" width="10" height="10" rx="1"/>`;
+      return `<g class="plot-event" data-event-kind="${kind}" ${event ? 'data-monthly-group="true"' : ''} ${yearly ? `data-calendar-month="${months[i].m}" data-event-year="${months[i].y}"` : `data-month="${i}"`} tabindex="0" role="button" aria-label="${escape(label)}"><title>${escape(label)}${examples ? ` Фактические примеры: ${escape(examples)}` : ''}</title><rect class="plot-event-target" x="${cx-9}" y="${y-10}" width="18" height="20"/>${shape}${count > 1 ? `<text x="${cx}" y="${y+22}">${event && count>999 ? '999+' : count}</text>` : ''}</g>`;
     }).join('');
   }
   function reading() {
@@ -159,7 +174,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
         if (v == null) return;
         dots += `<circle class="plot-year-dot${m === selectedMonth ? ' is-selected' : ''}" cx="${X(m)}" cy="${Y(v)}" r="${m === selectedMonth ? 3.5 : 2.5}"/>`;
       });
-      lines += `<g class="plot-year" data-year="${series.year}" data-year-color="${series.color}"><path d="${d}"/>${dots}</g>`;
+      lines += `<g class="plot-year" data-year="${series.year}" data-current-year="${series.current}" data-year-color="${series.color}"><path d="${d}"/>${dots}</g>`;
     }
     for (const [i] of journal.byMonth) {
       const year = displayed.find(series => series.year === months[i].y), value = year?.plotted[months[i].m];
@@ -175,7 +190,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
       hits += `<rect class="plot-hit" data-calendar-month="${m}" x="${left}" y="0" width="${right-left}" height="${H}" tabindex="0" role="button" aria-label="${MONTH_LABELS[m]}: сравнить годы"/>`;
     }
     host.querySelector('.plot').innerHTML = `<svg role="img" aria-label="${escape(title)}: сравнение по годам, январь — декабрь" viewBox="0 0 ${W} ${H}">${grid}${labels}<line class="plot-cursor" x1="${X(selectedMonth)}" x2="${X(selectedMonth)}" y1="${T}" y2="${H-B}"/>${lines}${hits}${eventMarks}${caseMarks}</svg>`;
-    host.querySelector('.year-legend').innerHTML = years.map(s => `<span data-year-color="${s.color}">${s.year}</span>`).join('');
+    host.querySelector('.year-legend').innerHTML = years.map(s => `<span data-year-color="${s.color}">${s.year}${s.current ? ' · текущий' : ''}</span>`).join('');
     host.querySelector('.chart-window').textContent = `${ymLabel(months[0])} — ${ymLabel(months.at(-1))}`;
     host.querySelector('.chart-reading').innerHTML = `<strong>${MONTH_LABELS[selectedMonth]} · по годам</strong><div class="year-readings">${years.map(s => `<div data-year-color="${s.color}"><strong>${s.year}</strong><span>${!s.included[selectedMonth] ? 'Вне периода отчёта' : s.values[selectedMonth] == null ? 'Нет полных данных' : fmt(s.values[selectedMonth],3)+' кВт·ч'}</span></div>`).join('')}</div>`;
     host.querySelectorAll('[data-year-color]').forEach(el => el.style.setProperty('--year-color', el.dataset.yearColor));
@@ -219,6 +234,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
     host.querySelector('.plot').innerHTML = `<svg role="img" aria-label="${escape(title)}: ${escape(ymLabel(months[start]))} — ${escape(ymLabel(months[end]))}" viewBox="0 0 ${W} ${H}">${caseBands}${grid}${labels}${baseline != null ? `<path class="plot-base" d="M${L},${Y(baseline)}H${W-R}"/>` : ''}${peers ? `<path class="plot-group" d="${path(peers)}"/>` : ''}${scn ? `<path class="plot-scenario" d="${path(scn)}"/>` : ''}<path class="plot-fact" d="${path(fact)}"/>${shift != null && shift >= start && shift <= end ? `<path class="plot-shift" d="M${X(shift)},${T}V${H-B}"/>` : ''}<line class="plot-cursor" x1="${X(selected)}" x2="${X(selected)}" y1="${T}" y2="${H-B}"/>${hits}${eventMarks}${caseMarks}</svg>`;
     host.querySelector('.chart-window').textContent = `${ymLabel(months[start])} — ${ymLabel(months[end])}`;
     const scrub = host.querySelector('.month-scrubber'); scrub.min = start; scrub.max = end;
+    for (const [action, disabled] of Object.entries({ left: start === 0, right: end === months.length - 1, in: end - start < 3, out: start === 0 && end === months.length - 1 })) host.querySelector(`[data-zoom="${action}"]`).disabled = disabled;
     reading();
   }
   host.addEventListener('click', e => {
@@ -228,12 +244,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
     if (calendar) { selectedMonth = Number(calendar.dataset.calendarMonth); draw(); return; }
     const point = e.target.closest('[data-month]'); if (point) { selected = Number(point.dataset.month); draw(); return; }
     const action = e.target.closest('[data-zoom]')?.dataset.zoom; if (!action) return;
-    const n = months.length, len = end-start+1, shiftBy = Math.max(1,Math.round(len/2));
-    if (action === 'all') { start=0; end=n-1; }
-    if (action === 'in') start = Math.max(0,end-Math.max(3,Math.round(len/2))+1);
-    if (action === 'out') start = Math.max(0,end-len*2+1);
-    if (action === 'left') { start=Math.max(0,start-shiftBy); end=Math.min(n-1,start+len-1); }
-    if (action === 'right') { end=Math.min(n-1,end+shiftBy); start=Math.max(0,end-len+1); }
+    ({ start, end } = chartWindow({ start, end }, action, months.length, selected));
     selected=Math.max(start,Math.min(end,selected)); draw();
   });
   host.addEventListener('keydown', e => {

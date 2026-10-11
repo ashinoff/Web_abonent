@@ -2,7 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from '@e965/xlsx';
 import { readMonthlyWorkbook, parseMonthlyMatrix } from '../public/monthly.js';
-import { splitYears, yearPath } from '../public/chart-years.js';
+import { splitYears, yearPath, CURRENT_YEAR_COLOR } from '../public/chart-years.js';
+
+test('red belongs to the actual current year, including partial or unsorted reports', () => {
+  const months = [{ y:2026,m:0 }, { y:2024,m:0 }, { y:2025,m:0 }, { y:2026,m:8 }];
+  const years = splitYears(months, [10,20,30,40], 2026);
+  assert.equal(years.find(s => s.year === 2026).color, CURRENT_YEAR_COLOR);
+  assert.ok(years.filter(s => s.year !== 2026).every(s => s.color !== CURRENT_YEAR_COLOR && !s.current));
+  assert.equal(years.find(s => s.year === 2026).values[8], 40);
+  assert.ok(splitYears(months, [10,20,30,40], 2027).every(s => s.color !== CURRENT_YEAR_COLOR));
+  assert.equal(splitYears(months, [10,20,30,40], 2025).find(s => s.year === 2025).color, CURRENT_YEAR_COLOR);
+});
 
 const names = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const matrix = () => [

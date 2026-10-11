@@ -12,7 +12,7 @@ import { initLoadMap } from './load-map.js';
 import { folderSources, offlineDirectory, formatBytes, sourceRoles } from './offline-copies.js';
 import { initDiagnosticsUI } from './diagnostics-ui.js';
 import { createLoadSession, requestSignal } from './load-session.js';
-import { listOfflineCopies } from './prepared-cache.js?v=18';
+import { listOfflineCopies } from './prepared-cache.js?v=19';
 import { createUserNotifications } from './user-notifications.js';
 import { initUserNoteEditor } from './user-note-editor.js';
 import { initAccountUI } from './account-ui.js';
@@ -46,7 +46,7 @@ let incomingFile = null, incomingState = 'idle', incomingError = '', monthlyWork
 const monthlyRequests = new Map();
 const journalRoles = ['instant', 'events'];
 const journalSources = Object.fromEntries(journalRoles.map(role => [role, { file: null, state: 'idle', error: '', info: null }]));
-let exporting = false;
+let exporting = false, exportSession = null;
 let summary = null, pending = null, currentSource = null, isDemo = false, busy = false, operation = 0;
 let results = [], resultTotal = 0, submitted = false, searchVersion = 0, worker, requestId = 0, prefs = {};
 let folderItems = [], filesState = 'idle', filesError = '', registryError = '', consumptionInfo = null, incomingInfo = null;
@@ -64,7 +64,7 @@ const loads = createLoadSession();
 try { prefs = JSON.parse(localStorage.getItem('abonent.preferences.v1') || '{}'); } catch { /* Preferences are optional. */ }
 const sourceFiles = initSourceFiles($('#source-files'), { onRead: useSourceFile, onRefresh: refreshResFiles });
 function savePrefs() { try { localStorage.setItem('abonent.preferences.v1', JSON.stringify(prefs)); } catch { /* Private browsing can disable storage. */ } }
-function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=18', import.meta.url)); }
+function createWorkbookWorker() { return new Worker(new URL('./worker.js?v=19', import.meta.url)); }
 function getWorker() {
   if (!worker) {
     worker = createWorkbookWorker();
@@ -92,16 +92,16 @@ function resetMonthly(error = new Error('Операция отменена.')) {
   for (const p of monthlyRequests.values()) { clearTimeout(p.timer); p.reject(error); }
   monthlyRequests.clear();
 }
-function monthlyRPC(action, payload = {}, transfer = []) {
+function monthlyRPC(action, payload = {}, transfer = [], onProgress = () => {}) {
   if (!monthlyWorker) {
     monthlyWorker = createWorkbookWorker();
-    monthlyWorker.onmessage = ({ data }) => { const p=monthlyRequests.get(data.id); if (!p) return; clearTimeout(p.timer); monthlyRequests.delete(data.id);if(data.status===401)window.dispatchEvent(new Event('abonent-auth-required')); data.error ? p.reject(Object.assign(new Error(data.error),{status:data.status,code:data.code})) : p.resolve(data.result); };
+    monthlyWorker.onmessage = ({ data }) => { const p=monthlyRequests.get(data.id); if (!p) return; if (data.progress) { p.onProgress(data.progress); return; } clearTimeout(p.timer); monthlyRequests.delete(data.id);if(data.status===401)window.dispatchEvent(new Event('abonent-auth-required')); data.error ? p.reject(Object.assign(new Error(data.error),{status:data.status,code:data.code})) : p.resolve(data.result); };
     monthlyWorker.onerror = () => { resetMonthly(new Error('Не удалось обработать файл потребления. Повторите загрузку.')); consumptionState='error'; renderIndicators(); };
   }
   return new Promise((resolve,reject) => {
-    const id=++monthlyId, timer=setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },
-      ['loadPreparedMonthly','checkPreparedIncoming','loadPreparedJournal','exportAnomalies'].includes(action) ? 300000 : 120000);
-    monthlyRequests.set(id,{resolve,reject,timer,action,role:payload.role}); monthlyWorker.postMessage({id,action,payload},transfer);
+    const id=++monthlyId, timer=['exportAnomalies','exportAnomalyPart'].includes(action) ? null : setTimeout(() => { resetMonthly(new Error('Расчёт занял слишком много времени. Попробуйте меньшую выгрузку.')); consumptionState='error'; renderIndicators(); },
+      ['loadPreparedMonthly','checkPreparedIncoming','loadPreparedJournal'].includes(action) ? 300000 : 120000);
+    monthlyRequests.set(id,{resolve,reject,timer,action,role:payload.role,onProgress}); monthlyWorker.postMessage({id,action,payload},transfer);
   });
 }
 function cancelJournalLoads(roles, error = new Error('Чтение журнала остановлено.')) {
@@ -709,26 +709,57 @@ async function readSelectedJournals(signal = loads.signal, offlineOnly = usingOf
   }
   if (loads.current(signal)) renderIndicators();
 }
+function reportProgress(progress) {
+  const phase = progress.phase === 'analysis' ? 'Анализируем потребителей' : progress.phase === 'parts' ? 'Распределяем свидетельства по файлам' : 'Готовим Excel-файл';
+  $('#report-status').textContent = `${phase} · ${progress.done} / ${progress.total}`;
+  $('#report-progress').hidden = false;
+  $('#report-progress').value = progress.total ? Math.round(progress.done * 100 / progress.total) : 0;
+}
+async function downloadReportPart(index) {
+  const session = exportSession;
+  if (!session || exporting || session.op !== operation || session.res !== selectedRes) return;
+  exporting = true; renderIndicators();
+  $('#report-parts').querySelectorAll('button').forEach(button => { button.disabled = true; });
+  try {
+    const { buffer } = await monthlyRPC('exportAnomalyPart', { token: session.token, index }, [], reportProgress);
+    if (exportSession !== session || session.op !== operation || session.res !== selectedRes) return;
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const href = URL.createObjectURL(blob), link = document.createElement('a');
+    const suffix = session.parts.length > 1 ? `_часть_${String(index + 1).padStart(3, '0')}_из_${session.parts.length}` : '';
+    link.href = href; link.download = `${session.filename}${suffix}.xlsx`;
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(href), 60000);
+    $('#report-status').textContent = `Часть ${index + 1} из ${session.parts.length} готова к сохранению.`;
+    const button = $(`[data-report-part="${index}"]`); if (button) button.textContent = 'Скачать ещё раз';
+    toast(`Excel готов · часть ${index + 1} из ${session.parts.length}`);
+  } catch (error) { if (session.op === operation) { $('#report-status').textContent = error.message; toast(error.message); } }
+  finally { exporting = false; $('#report-progress').hidden = true; $('#report-parts').querySelectorAll('button').forEach(button => { button.disabled = false; }); renderIndicators(); }
+}
 async function exportAnomalies() {
   if (!selectedRes || !summary || consumptionState !== 'ready' || busy || exporting) return;
   const op = operation, res = selectedRes;
-  exporting = true; renderIndicators(); toast('Готовим Excel-отчёт по выбранной РЭС…');
+  exporting = true; exportSession = null; renderIndicators();
+  $('#report-subtitle').textContent = res.name; $('#report-parts').replaceChildren();
+  reportProgress({ phase: 'analysis', done: 0, total: consumptionInfo?.accountCount || 0 });
+  openDialog('report-dialog');
   try {
     const files = { registry: selectedFile, consumption: consumptionFile, incoming: incomingFile, ...Object.fromEntries(journalRoles.map(role => [role, journalSources[role].file])) };
-    const { buffer, count } = await monthlyRPC('exportAnomalies', { settings: analysisUI.getSettings(), context: {
+    const generatedAt = new Date().toISOString();
+    const { token, parts, count } = await monthlyRPC('exportAnomalies', { settings: analysisUI.getSettings(), context: {
       res: { name: res.name, path: res.path }, source: rootUrl(), sourceMode: usingOfflineCopy ? 'offline' : 'online', files,
+      generatedAt,
       journalStates: Object.fromEntries(journalRoles.map(role => [role, { state: journalSources[role].state, error: journalSources[role].error }]))
-    } });
+    } }, [], reportProgress);
     if (op !== operation || selectedRes !== res) return;
-    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const href = URL.createObjectURL(blob), link = document.createElement('a');
-    link.href = href; link.download = `Аномалии_${res.name.replace(/[\\/:*?"<>|]/g, '_')}_${new Date().toLocaleDateString('sv-SE')}.xlsx`;
-    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(href), 60000);
-    toast(`Отчёт готов · потребителей в списке: ${count}`);
-  } catch (error) { if (op === operation) toast(error.message); }
-  finally { exporting = false; renderIndicators(); }
+    exportSession = { op, res, token, parts, filename: `Аномалии_${res.name.replace(/[\\/:*?"<>|]/g, '_')}_${new Date(generatedAt).toLocaleDateString('sv-SE')}` };
+    $('#report-parts').innerHTML = parts.map(part => `<div class="report-part"><div><strong>Часть ${part.index + 1} из ${parts.length}</strong><br><span>Карточек: ${part.count}</span></div><button type="button" class="secondary" data-report-part="${part.index}">Скачать Excel</button></div>`).join('');
+    $('#report-status').textContent = count ? `Отобрано потребителей: ${count}. Файлов: ${parts.length}. ${parts.length > 1 ? 'Скачайте нужные части отдельными кнопками.' : ''}` : 'Жёлтых и красных карточек с баллами нет. Доступна сводка анализа.';
+    exporting = false;
+    if (parts.length === 1) await downloadReportPart(0);
+  } catch (error) { if (op === operation) { $('#report-status').textContent = error.message; toast(error.message); } }
+  finally { exporting = false; $('#report-progress').hidden = true; renderIndicators(); }
 }
 function clearDataset(keepDirectory = false) {
+  exportSession = null;
   notesUI.reset();
   userNoteEditor.reset();
   for (const source of Object.values(journalSources)) {
@@ -985,7 +1016,7 @@ async function openRecord(id, context = { parent: null, variants: [] }) {
     const r = await rpc('record', { id });
     if (version !== recordVersion || op !== operation || context.parent && !$('#' + context.parent).open) return;
     activeRecord = r; recordContext = context;
-    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><div class="record-address"><p>${esc(r.address || 'Адрес не указан')}</p><button type="button" class="record-map-button" data-mark-consumer aria-label="Отметить потребителя на карте и добавить комментарий" title="Отметить на карте">${icon('pin')}</button></div></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div><section class="consumption-action"><button class="primary analysis-button" id="consumer-analyze" type="button" ${consumptionState !== 'ready' || !r.fields.account ? 'disabled' : ''} aria-describedby="analysis-availability">${icon('chart')}<span>Провести анализ потребления потребителя</span></button><p class="hint" id="analysis-availability">${consumptionState === 'ready' ? 'Все строки ЛС + ТУ суммируются по месяцам. Анализируем общий объём точки.' : 'Для анализа загрузите «ПО.xls» или «ПО.xlsx» в папку РЭС.'}</p></section>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
+    $('#record-body').innerHTML = `<div class="record-intro"><h3>${esc(r.fields.name || 'Абонент')}</h3><div class="record-address"><p>${esc(r.address || 'Адрес не указан')}</p><div class="record-actions" data-no-swipe><button type="button" class="record-map-button" data-mark-consumer aria-label="Отметить потребителя на карте и добавить комментарий" title="Отметить на карте">${icon('pin')}</button><button type="button" class="record-map-button record-analysis-button" id="consumer-analyze" ${consumptionState !== 'ready' || !r.fields.account ? 'disabled' : ''} aria-label="Провести анализ потребления" aria-describedby="analysis-availability" title="Провести анализ потребления">${icon('chart')}</button></div></div><p class="sr-only" id="analysis-availability">${consumptionState === 'ready' ? 'Анализ потребления выбранной точки учёта.' : 'Для анализа загрузите файл потребления в папку РЭС.'}</p></div><div class="record-main-numbers"><div class="quick-metric" data-tone="meter"><div class="number-label">Номер ПУ</div><div class="number-value">${esc(r.fields.meter || '—')}</div></div><div class="quick-metric" data-tone="account"><div class="number-label">Лицевой счёт</div><div class="number-value">${esc(r.fields.account || '—')}</div></div>${ratioLine(r)}</div>${renderRecordSections(r)}<div class="record-source">${esc(r.file)}<br>Лист «${esc(r.sheet)}», строка ${r.row}${isDemo ? '<br>Демонстрационные данные' : ''}</div><button class="secondary copy-record" id="copy-record">${icon('copy')}Скопировать данные</button>`;
     $('#record-body .record-main-numbers').insertAdjacentHTML('beforeend', pointLine(r));
     if (context.variants.length > 1) {
       $('#record-body').insertAdjacentHTML('afterbegin', `<div class="record-variants"><label for="record-variant">Строки этого ПУ в реестре: ${context.variants.length}</label><select id="record-variant">${context.variants.map(v => `<option value="${esc(v.id)}" ${v.id === id ? 'selected' : ''}>${esc([pointText(v), 'ЛС ' + (v.account || '—'), v.sheet + ', строка ' + v.row].join(' · '))}</option>`).join('')}</select></div>`);
@@ -1090,6 +1121,14 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest('.r
 $('#settings-open').addEventListener('click', showSettings); $('#district-button').addEventListener('click', showEnterprises); $('#res-button').addEventListener('click', showRes);
 $('#offline-open').addEventListener('click', showOfflineCopies);
 $('#anomaly-export').addEventListener('click', exportAnomalies);
+$('#report-parts').addEventListener('click', event => {
+  const button = event.target.closest('[data-report-part]');
+  if (button) downloadReportPart(Number(button.dataset.reportPart));
+});
+$('#report-dialog').addEventListener('close', () => {
+  exportSession = null;
+  monthlyWorker?.postMessage({ id: 0, action: 'clearAnomalyReport', payload: {} });
+});
 $('#offline-list').addEventListener('click', e => { const button = e.target.closest('[data-offline-res]'); if (button && !button.disabled) selectOfflineRes(Number(button.dataset.offlineRes)); });
 document.addEventListener('click', e => {
   const indicator = e.target.closest('#base-indicator, #registry-indicator');

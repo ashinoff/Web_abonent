@@ -8,10 +8,10 @@
   <title>РОССЕТИ — Кубаньэнерго · Реестр абонентов</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./styles.css?v=18">
-  <link rel="stylesheet" href="./journal-ui.css?v=18">
+  <link rel="stylesheet" href="./styles.css?v=19">
+  <link rel="stylesheet" href="./journal-ui.css?v=19">
   <script src="./config.js"></script>
-  <script type="module" src="./app.js?v=18"></script>
+  <script type="module" src="./app.js?v=19"></script>
 </head>
 <body>
   <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -176,6 +176,10 @@
   <dialog id="record-dialog" class="record-dialog" aria-labelledby="record-title"><div class="dialog-header record-header"><button type="button" class="icon-button back-arrow" id="record-back" aria-label="К списку ПУ" hidden><svg aria-hidden="true"><use href="#i-back"/></svg></button><div class="record-header-copy"><span class="eyebrow">КАРТОЧКА АБОНЕНТА</span><h2 id="record-title">Данные реестра</h2></div><button class="icon-button close-dialog" aria-label="Закрыть карточку"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body" id="record-body"></div></dialog>
   <dialog id="analysis-picker-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="analysis-picker-title"><div class="dialog-header tp-header"><div class="tp-header-top"><div class="tp-header-copy"><h2 id="analysis-picker-title">Выберите контур ТП</h2><p class="registry-meta">ТП из файла потребления</p></div><button class="icon-button close-dialog" aria-label="Закрыть выбор контура"><svg><use href="#i-close"/></svg></button></div><label class="sr-only" for="analysis-tp-filter">Найти контур ТП</label><input id="analysis-tp-filter" type="search" class="analysis-filter" placeholder="Найти ТП"></div><div class="dialog-body"><div id="analysis-tp-list" class="choice-list"></div></div></dialog>
   <dialog id="analysis-dialog" class="analysis-dialog full-screen-dialog" aria-labelledby="analysis-title"><div class="dialog-header"><button type="button" id="analysis-back" class="icon-button back-arrow" aria-label="Назад к выбору" hidden><svg><use href="#i-back"/></svg></button><div class="analysis-header-copy"><h2 id="analysis-title">Анализ потребления</h2><p class="registry-meta" id="analysis-subtitle"></p></div><button class="icon-button close-dialog" aria-label="Закрыть анализ"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body" id="analysis-body"></div><button type="button" class="scroll-top" data-scroll-top aria-label="Наверх анализа" hidden><svg><use href="#i-up"/></svg></button></dialog>
+  <dialog id="report-dialog" class="registry-dialog full-screen-dialog" aria-labelledby="report-title">
+    <div class="dialog-header"><div><span class="eyebrow">ВЫБРАННАЯ РЭС</span><h2 id="report-title">Отчёт по аномалиям</h2><p class="registry-meta" id="report-subtitle"></p></div><button type="button" class="icon-button close-dialog" aria-label="Закрыть отчёт"><svg aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="dialog-body"><p class="hint">Выгружаются жёлтые и красные карточки с баллами, их причины, потребление и свидетельства журналов.</p><p id="report-status" role="status" aria-live="polite"></p><progress id="report-progress" max="100" value="0" aria-label="Подготовка отчёта"></progress><div id="report-parts" class="report-parts" data-no-swipe></div></div>
+  </dialog>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

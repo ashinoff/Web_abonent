@@ -110,6 +110,51 @@ export function createAnalysisService(model, records = [], journals = {}) {
   }
   const metadata = { months: model.months, warnings: model.warnings, rowCount: model.rows.length, accountCount: model.accounts.size, missingTP: model.rows.filter(r => !r.tp).length,
     ...(journalAnalysis ? { journalCoverage: journalAnalysis.coverage() } : {}) };
+  function* generateReport(settings) {
+    const rows = [], counts = { accounts: model.accounts.size, selected: 0, red: 0, amber: 0, green: 0, dead: 0, unknown: 0, journalCheck: 0, journalHigh: 0 };
+    let consumption = 0, incompleteTotal = false, lossKwh = 0;
+    let done = 0;
+    for (const [account] of model.accounts) {
+      if (done++ % 100 === 0) yield { phase: 'analysis', done: done - 1, total: model.accounts.size };
+      const result = run('consumer:' + account, settings).results[0], m = result.meter;
+      counts[result.cls]++; if (result.journalPriority === 'check') counts.journalCheck++; if (result.journalPriority === 'high') counts.journalHigh++;
+      if (result.total == null || m.incomplete) incompleteTotal = true;
+      if (result.total != null) consumption += result.total;
+      lossKwh += result.lossKwh || 0;
+      if (!['red', 'amber'].includes(result.cls) || !(result.score > 0)) continue;
+      const substantive = result.flags.filter(flag => flag.source == null || flag.pts > 0 || flag.supportingEvidence === true);
+      const reasons = substantive.map(flag => `${flag.title}: ${flagObservation(flag)}`);
+      if (result.cls === 'dead') reasons.push('Все известные месячные объёмы не превышают 3 кВт·ч; проверить, действует ли договор и не было ли отключения.');
+      if (result.cls === 'unknown') reasons.push('Нет неотрицательных числовых объёмов; для анализа недостаточно данных.');
+      if (m.incomplete) reasons.push(`Неполные месяцы: ${m.incomplete}; отсутствующие объёмы не принимались за ноль.`);
+      if (m.negative) reasons.push('Присутствуют отрицательные корректировки; они сохранены в сумме и графике и исключены из поиска остановки ПУ.');
+      const recommendations = [...new Set(substantive.map(monthlyRecommendation).filter(Boolean))];
+      if (result.cls === 'unknown' || m.incomplete) recommendations.push('Проверить исходную выгрузку и восстановить отсутствующие месячные объёмы всех ТУ.');
+      if (result.cls === 'dead') recommendations.push('Уточнить статус договора, отключения и фактическую работу объекта; сверить контрольные показания.');
+      if (m.negative) recommendations.push('Сверить отрицательные корректировки с документами перерасчёта и проверить исходные месячные объёмы.');
+      if (!recommendations.length) recommendations.push('Проверить исходные объёмы, режим работы потребителя, сведения об отключениях, заменах ПУ и акты проверок.');
+      rows.push({ result, account: m.account, name: m.name, address: m.address, serials: m.serials, points: m.points, tpNames: m.tpNames, scope: 'ЛС, все ТУ', reasons, recommendations });
+    }
+    const priority = result => result.cls === 'red' || result.journalPriority === 'high' ? 0
+      : result.cls === 'amber' || result.journalPriority === 'check' ? 1
+      : result.cls === 'dead' ? 2 : result.cls === 'unknown' ? 3 : 4;
+    rows.sort((a, b) => priority(a.result) - priority(b.result)
+      || (b.result.journalScore || 0) - (a.result.journalScore || 0)
+      || (b.result.monthlyScore ?? b.result.score ?? 0) - (a.result.monthlyScore ?? a.result.score ?? 0)
+      || (b.result.lossKwh || 0) - (a.result.lossKwh || 0)
+      || String(a.account).localeCompare(String(b.account), 'ru', { numeric: true }));
+    counts.selected = rows.length;
+    const selected = new Set(rows.map(row => row.result.meter.id));
+    const caseDetails = journalAnalysis?.reportCases?.(selected, new Map(rows.map(row => [row.result.meter.id, row.result]))) || [];
+    for (const item of caseDetails) annotateJournalContext(item, model.accounts.get(item.account) || []);
+    counts.journalCases = caseDetails.length;
+    counts.combinedCases = caseDetails.filter(item => item.scenario === 'combined').length;
+    counts.caseMonths = caseDetails.reduce((total, item) => total + (item.months?.length || 1), 0);
+    return { ...metadata, months: model.months, rows, counts, settings: normalizeSettings(settings), scope: 'Жёлтые и красные ЛС с баллами; все ТУ — индивидуальные алгоритмы потребления',
+      coverage: journalAnalysis?.coverage() || { instant: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, events: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, monthlyFirst: model.months.length ? `${model.months[0].y}-${String(model.months[0].m + 1).padStart(2, '0')}` : null, monthlyLast: model.months.length ? `${model.months.at(-1).y}-${String(model.months.at(-1).m + 1).padStart(2, '0')}` : null },
+      unmatched: journalAnalysis?.unmatched || { instant: { meters: 0, rows: 0, reasons: [] }, events: { meters: 0, rows: 0, reasons: [] } },
+      events: journalAnalysis?.reportEvents(selected) || [], metrics: journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
+  }
   return {
     summary: metadata,
     tps: () => [...tpRows].map(([key, g]) => ({ key, name: g.name, accounts: g.accounts.size })).sort((a,b) => a.name.localeCompare(b.name,'ru',{numeric:true})),
@@ -136,47 +181,19 @@ export function createAnalysisService(model, records = [], journals = {}) {
       return { ...metadata, tp: group.name, values, total: values.some(v => v != null) ? values.reduce((s,v) => s + (v ?? 0), 0) : null, completeMonths: values.filter(v => v != null).length, rowCount: group.rows.length, pointCount: new Set(group.rows.map(accountPointKey).filter(Boolean)).size, meterCount: registryMeters.size, results, flags: [...flags.values()], incoming: { status: 'awaiting-format', values: null }, counts: Object.fromEntries(['red','amber','green','dead','unknown'].map(k => [k, results.filter(r => r.cls === k).length])) };
     },
     report(settings) {
-      const rows = [], counts = { accounts: model.accounts.size, selected: 0, red: 0, amber: 0, green: 0, dead: 0, unknown: 0, journalCheck: 0, journalHigh: 0 };
-      let consumption = 0, incompleteTotal = false, lossKwh = 0;
-      for (const [account] of model.accounts) {
-        const result = run('consumer:' + account, settings).results[0], m = result.meter;
-        counts[result.cls]++; if (result.journalPriority === 'check') counts.journalCheck++; if (result.journalPriority === 'high') counts.journalHigh++;
-        if (result.total == null || m.incomplete) incompleteTotal = true;
-        if (result.total != null) consumption += result.total;
-        lossKwh += result.lossKwh || 0;
-        const substantive = result.flags.filter(flag => flag.source == null || flag.pts > 0 || flag.supportingEvidence === true);
-        const reasons = substantive.map(flag => `${flag.title}: ${flagObservation(flag)}`);
-        if (result.cls === 'dead') reasons.push('Все известные месячные объёмы не превышают 3 кВт·ч; проверить, действует ли договор и не было ли отключения.');
-        if (result.cls === 'unknown') reasons.push('Нет неотрицательных числовых объёмов; для анализа недостаточно данных.');
-        if (m.incomplete) reasons.push(`Неполные месяцы: ${m.incomplete}; отсутствующие объёмы не принимались за ноль.`);
-        if (m.negative) reasons.push('Присутствуют отрицательные корректировки; они сохранены в сумме и графике и исключены из поиска остановки ПУ.');
-        if (!reasons.length) continue;
-        const recommendations = [...new Set(substantive.map(monthlyRecommendation).filter(Boolean))];
-        if (result.cls === 'unknown' || m.incomplete) recommendations.push('Проверить исходную выгрузку и восстановить отсутствующие месячные объёмы всех ТУ.');
-        if (result.cls === 'dead') recommendations.push('Уточнить статус договора, отключения и фактическую работу объекта; сверить контрольные показания.');
-        if (m.negative) recommendations.push('Сверить отрицательные корректировки с документами перерасчёта и проверить исходные месячные объёмы.');
-        if (!recommendations.length) recommendations.push('Проверить исходные объёмы, режим работы потребителя, сведения об отключениях, заменах ПУ и акты проверок.');
-        rows.push({ result, account: m.account, name: m.name, address: m.address, serials: m.serials, points: m.points, tpNames: m.tpNames, scope: 'ЛС, все ТУ', reasons, recommendations });
+      const iterator = generateReport(settings); let step;
+      do { step = iterator.next(); } while (!step.done);
+      return step.value;
+    },
+    async reportAsync(settings, { onProgress = () => {}, assertCurrent = () => {} } = {}) {
+      const iterator = generateReport(normalizeSettings(settings));
+      for (;;) {
+        assertCurrent();
+        const step = iterator.next();
+        if (step.done) return step.value;
+        onProgress(step.value);
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
-      const priority = result => result.cls === 'red' || result.journalPriority === 'high' ? 0
-        : result.cls === 'amber' || result.journalPriority === 'check' ? 1
-        : result.cls === 'dead' ? 2 : result.cls === 'unknown' ? 3 : 4;
-      rows.sort((a, b) => priority(a.result) - priority(b.result)
-        || (b.result.journalScore || 0) - (a.result.journalScore || 0)
-        || (b.result.monthlyScore ?? b.result.score ?? 0) - (a.result.monthlyScore ?? a.result.score ?? 0)
-        || (b.result.lossKwh || 0) - (a.result.lossKwh || 0)
-        || String(a.account).localeCompare(String(b.account), 'ru', { numeric: true }));
-      counts.selected = rows.length;
-      const selected = new Set(rows.map(row => row.result.meter.id));
-      const caseDetails = journalAnalysis?.reportCases?.(selected, new Map(rows.map(row => [row.result.meter.id, row.result]))) || [];
-      for (const item of caseDetails) annotateJournalContext(item, model.accounts.get(item.account) || []);
-      counts.journalCases = caseDetails.length;
-      counts.combinedCases = caseDetails.filter(item => item.scenario === 'combined').length;
-      counts.caseMonths = caseDetails.reduce((total, item) => total + (item.months?.length || 1), 0);
-      return { ...metadata, months: model.months, rows, counts, settings: normalizeSettings(settings), scope: 'ЛС, все ТУ — индивидуальные алгоритмы потребления',
-        coverage: journalAnalysis?.coverage() || { instant: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, events: { loaded: false, totalMeters: 0, matchedMeters: 0, first: null, last: null, warnings: [] }, monthlyFirst: model.months.length ? `${model.months[0].y}-${String(model.months[0].m + 1).padStart(2, '0')}` : null, monthlyLast: model.months.length ? `${model.months.at(-1).y}-${String(model.months.at(-1).m + 1).padStart(2, '0')}` : null },
-        unmatched: journalAnalysis?.unmatched || { instant: { meters: 0, rows: 0, reasons: [] }, events: { meters: 0, rows: 0, reasons: [] } },
-        events: journalAnalysis?.reportEvents() || [], metrics: journalAnalysis?.reportMetrics(selected) || [], caseDetails, totals: { consumption: incompleteTotal ? null : consumption, observedConsumption: consumption, lossKwh } };
     },
   };
 }

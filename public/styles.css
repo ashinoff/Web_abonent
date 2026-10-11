@@ -437,6 +437,16 @@ dialog.has-swipe-underlay::backdrop{background:#0e253868;backdrop-filter:blur(3p
 .record-map-button{display:grid;place-items:center;flex:none;width:44px;height:44px;margin-top:-6px;border-radius:11px;color:#9a622d;background:#fff0de;border:1px solid #edd1af}
 .record-map-button svg{width:22px;height:22px}
 .record-map-button:hover{background:#f8e1c3}
+.record-actions{display:flex;gap:7px;flex:none}
+.record-analysis-button{background:#e6f2eb;border-color:#c5decf;color:#438260}
+.record-analysis-button:hover{background:#d4e9dd}
+.record-analysis-button:disabled{background:#eef1f5;border-color:#dce2eb;color:#8795a6;cursor:default}
+.chart-controls button{min-height:44px;min-width:44px;touch-action:manipulation}
+.chart-controls button:disabled{opacity:.4;cursor:default}
+.report-parts{display:grid;gap:10px;margin-top:18px}
+.report-part{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px;border:1px solid var(--line);border-radius:12px}
+.report-part span{color:var(--muted);font-size:12px}
+.report-part button{white-space:nowrap}
 .notes-filters{margin:0 26px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
 .notes-filters select{font-size:14px;padding:8px 10px;border:1px solid #cfdae7;background:#fff;color:#355575;border-radius:8px;min-height:40px;max-width:100%}
 .notes-filters #user-notes-sync{width:100%;margin:0;font-size:12px;line-height:1.5}

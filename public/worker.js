@@ -5,9 +5,11 @@ let xlsxLoaded = false;
 let journalPacks = { instant: null, events: null }, monthlyRecords = [];
 let journalGeneration = 0;
 const journalControllers = new Map();
+let reportSequence = 0, reportPlan = null;
 async function rebuildAnalysis() {
   if (!monthlyModel) return;
   const { createAnalysisService } = await import('./analysis-service.js');
+  reportSequence++; reportPlan = null;
   analysisService = createAnalysisService(monthlyModel, monthlyRecords, journalPacks);
 }
 function journalSummary(pack) {
@@ -30,7 +32,7 @@ self.onmessage = async ({ data }) => {
       journalControllers.set(id, controller);
       try {
       if (action === 'loadPreparedJournal') {
-        const { fetchPrepared } = await import('./prepared-cache.js?v=18');
+        const { fetchPrepared } = await import('./prepared-cache.js?v=19');
         ({ data: pack, ...cacheInfo } = await fetchPrepared({ ...payload, signal: controller.signal }));
       } else {
         ensureXLSX();
@@ -57,14 +59,29 @@ self.onmessage = async ({ data }) => {
     if (action === 'exportAnomalies') {
       if (!analysisService) throw new Error('Файл потребления не загружен.');
       ensureXLSX();
-      const { buildAnomalyWorkbook } = await import('./anomaly-report.js');
-      const report = analysisService.report(payload.settings);
-      const output = buildAnomalyWorkbook(report, XLSX, payload.context);
+      const { planAnomalyWorkbooks } = await import('./anomaly-report.js');
+      const service = analysisService, token = ++reportSequence; reportPlan = null;
+      const options = { onProgress: progress => self.postMessage({ id, progress }), assertCurrent: () => {
+        if (token !== reportSequence || service !== analysisService) throw new Error('Формирование отчёта отменено. Потребление остаётся загруженным.');
+      } };
+      const report = await service.reportAsync(payload.settings, options);
+      const plan = await planAnomalyWorkbooks(report, payload.context, options);
+      options.assertCurrent(); reportPlan = { plan, token, service };
+      self.postMessage({ id, result: { token, count: plan.count, parts: plan.parts.map((part, index) => ({ index, count: part.count })) } }); return;
+    }
+    if (action === 'clearAnomalyReport') { reportSequence++; reportPlan = null; self.postMessage({ id, result: true }); return; }
+    if (action === 'exportAnomalyPart') {
+      if (!reportPlan || reportPlan.token !== payload.token || reportPlan.service !== analysisService) throw new Error('Данные отчёта изменились. Сформируйте отчёт заново.');
+      ensureXLSX();
+      const currentPlan = reportPlan;
+      const { buildAnomalyWorkbookPart } = await import('./anomaly-report.js');
+      if (reportPlan !== currentPlan) throw new Error('Формирование отчёта отменено.');
+      const output = buildAnomalyWorkbookPart(currentPlan.plan, payload.index, XLSX, progress => self.postMessage({ id, progress }));
       const buffer = output instanceof ArrayBuffer ? output : output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength);
-      self.postMessage({ id, result: { buffer, count: report.rows.length } }, [buffer]); return;
+      self.postMessage({ id, result: { buffer } }, [buffer]); return;
     }
     if (['loadPreparedRegistry','loadPreparedMonthly','checkPreparedIncoming'].includes(action)) {
-      const { fetchPrepared } = await import('./prepared-cache.js?v=18');
+      const { fetchPrepared } = await import('./prepared-cache.js?v=19');
       const { data: pack, ...cacheInfo } = await fetchPrepared(payload);
       if (action === 'loadPreparedRegistry') {
         const { unpackRegistry } = await import('./prepared-data.js');
@@ -74,6 +91,7 @@ self.onmessage = async ({ data }) => {
           skipped: pack.skipped || [], sheets: sheets.map(({ sheet, layout, sample }) => ({ sheet, layout, sample })), ...cacheInfo } }); return;
       }
       if (action === 'loadPreparedMonthly') {
+        reportSequence++; reportPlan = null;
         const { unpackMonthly } = await import('./prepared-data.js');
         const { indexMonthly } = await import('./monthly.js');
         const { createAnalysisService } = await import('./analysis-service.js');
@@ -91,6 +109,7 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ id, result: inspectExcelWorkbook(payload.buffer, XLSX) }); return;
     }
     if (action === 'loadMonthly' || action === 'demoMonthly') {
+      reportSequence++; reportPlan = null;
       if (action === 'loadMonthly') ensureXLSX();
       analysisService = null; monthlyModel = null;
       const { readMonthlyWorkbook, indexMonthly } = await import('./monthly.js');

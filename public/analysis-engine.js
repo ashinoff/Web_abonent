@@ -356,19 +356,36 @@ function algStepDrop(v, months, gMed, gCnt){
 }
 
 // S3b. Провал с восстановлением: «яма» посреди ряда — воровали до проверки/доначисления
-function algValley(v, months){
+function sortedMedian(values) {
+  const middle = Math.floor(values.length / 2);
+  return values.length ? values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2 : null;
+}
+function insertSorted(values, value, beforeEqual = false) {
+  if (value == null || !isFinite(value)) return;
+  let low = 0, high = values.length;
+  while (low < high) { const middle = (low + high) >>> 1; if (beforeEqual ? values[middle] < value : values[middle] <= value) low = middle + 1; else high = middle; }
+  values.splice(low, 0, value);
+}
+export function algValley(v, months){
   const T=TUNE.valley;
   const n=v.length;
   let bestV=null;
-  for(let i=3;i<n-6;i++) for(let j=i+4;j<=Math.min(n-3,i+24);j++){
-    const inside=v.slice(i,j);
-    if(inside.filter(x=>x!=null).length<4) continue;
-    const mL=median(v.slice(0,i)), mR=median(v.slice(j));
-    if(mL==null||mR==null||mL<100||mR<100) continue;
-    const mi=median(inside), side=Math.min(mL,mR);
-    if(mi==null) continue;
-    const ratio=mi/side;
-    if(ratio<=T.rMax && (!bestV || ratio<bestV.ratio || (ratio===bestV.ratio && (j-i)>(bestV.j-bestV.i)))) bestV={i,j,mi,mL,side,ratio};
+  const left = [], right = [], prefix = [], suffix = [];
+  for (let i = 0; i < n; i++) { left[i] = sortedMedian(prefix); insertSorted(prefix, v[i]); }
+  for (let j = n - 1; j >= 0; j--) { insertSorted(suffix, v[j], true); right[j] = sortedMedian(suffix); }
+  for(let i=3;i<n-6;i++) {
+    const inside = []; let known = 0;
+    for(let j=i+1;j<=Math.min(n-3,i+24);j++){
+      if (v[j-1] != null) known++;
+      insertSorted(inside, v[j-1]);
+      if(j<i+4 || known<4) continue;
+      const mL=left[i], mR=right[j];
+      if(mL==null||mR==null||mL<100||mR<100) continue;
+      const mi=sortedMedian(inside), side=Math.min(mL,mR);
+      if(mi==null) continue;
+      const ratio=mi/side;
+      if(ratio<=T.rMax && (!bestV || ratio<bestV.ratio || (ratio===bestV.ratio && (j-i)>(bestV.j-bestV.i)))) bestV={i,j,mi,mL,side,ratio};
+    }
   }
   if(!bestV) return null;
   const len=bestV.j-bestV.i;

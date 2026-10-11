@@ -204,10 +204,11 @@ export function createJournalAnalysis(model, records, journals = {}) {
       outsidePeriodRegistrations: groupedEvents.reduce((sum, e) => sum + (!inPeriod(e) ? registrations(e) : 0), 0), recognizedEvents: recognizedRegistrationCount + electricalMarkerCount };
     return result;
   }
-  function reportEvents() {
+  function reportEvents(accounts) {
     const out = [];
     for (const [key, entries] of eventsBySerial) {
       const binding = bindings.get(key);
+      if (accounts && (!binding || !accounts.has(binding.account))) continue;
       for (const event of entries) out.push({ account: binding?.account || '', mappingReason: binding ? '' : reasons.get(key) || 'Серийный номер отсутствует в реестре.', ...event });
     }
     out.sort((a,b) => a.at.localeCompare(b.at));

@@ -98,9 +98,14 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
         } else if (action === 'exportAnomalies') {
           assert.ok(this.analysis, 'export uses the loaded analysis worker');
           exports.push(payload);
-          const { buildAnomalyWorkbook } = await import('../public/anomaly-report.js');
-          const report = this.analysis.report(payload.settings);
-          result = { buffer:buildAnomalyWorkbook(report,XLSX,payload.context),count:report.rows.length };
+          const { planAnomalyWorkbooks } = await import('../public/anomaly-report.js');
+          const report = await this.analysis.reportAsync(payload.settings, { onProgress: progress => this.onmessage({ data: { id, progress } }) });
+          this.reportPlan = await planAnomalyWorkbooks(report, payload.context);
+          result = { token: 1, count: report.rows.length, parts: this.reportPlan.parts.map((part,index) => ({ index, count:part.count })) };
+        } else if (action === 'exportAnomalyPart') {
+          const { buildAnomalyWorkbookPart } = await import('../public/anomaly-report.js');
+          result = { buffer: buildAnomalyWorkbookPart(this.reportPlan, payload.index, XLSX) };
+        } else if (action === 'clearAnomalyReport') { this.reportPlan = null; return;
         } else if (action === 'analysisRecords') result = analysisRecords(this.index.records);
         else if (action === 'search') result = search(this.index,payload);
         else if (action === 'analysisConsumer') result = this.analysis.consumer(payload.account,payload.settings,payload.tp,payload.point);
@@ -240,7 +245,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
     assert.equal(exports[0].context.journalStates.instant.state,'ready');
     assert.equal(exports[0].context.journalStates.events.state,'ready');
     assert.match(downloads[0].name,/Аномалии_Другая РЭС_/);
-    $('#settings-dialog .close-dialog').click();
+    $('#report-dialog .close-dialog').click();
   });
   await t.test('offline shortcut lists only saved RES and opens registry, PO and incoming without requests even online', async () => {
     const beforeCopies = await listOfflineCopies(source), beforeRequests = networkCalls.length;
@@ -266,6 +271,7 @@ test('UI keeps selection responsive, preserves ready data on stop and manages on
       await until(() => exports.length === 2 && !$('#anomaly-export').disabled,'report from selected offline copy');
       assert.equal(exports[1].context.sourceMode,'offline');
       assert.equal(downloads.length,2);
+      $('#report-dialog .close-dialog').click();
       await delay(700);
       $('#settings-open').click(); $('[data-load-source="consumption"]').click();
       const beforeJournalLoads = journalLoads.length;

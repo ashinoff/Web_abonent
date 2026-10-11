@@ -1,8 +1,9 @@
-const COLORS = ['#b9797e', '#689986', '#648fb3', '#b59b70', '#9783b2', '#60969d', '#af829c', '#8d9870'];
+const COLORS = ['#689986', '#648fb3', '#b59b70', '#9783b2', '#60969d', '#af829c', '#8d9870'];
+export const CURRENT_YEAR_COLOR = '#cf3341';
 export const MONTH_LABELS = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
 
 // Calendar slots keep partial years and missing readings distinct from zero.
-export function splitYears(months, values) {
+export function splitYears(months, values, currentYear = new Date().getFullYear()) {
   const years = new Map();
   months.forEach(({ y, m }, i) => {
     if (!years.has(y)) years.set(y, { year: y, values: Array(12).fill(null), included: Array(12).fill(false) });
@@ -11,7 +12,8 @@ export function splitYears(months, values) {
     series.included[m] = true;
   });
   return [...years.values()].sort((a, b) => a.year - b.year).map((series, i) => ({
-    ...series, color: COLORS[i] || `hsl(${Math.round(i * 137.508) % 360} 30% 55%)`,
+    ...series, current: series.year === currentYear,
+    color: series.year === currentYear ? CURRENT_YEAR_COLOR : COLORS[i] || `hsl(${45 + Math.round(i * 137.508) % 270} 30% 55%)`,
   }));
 }
 
