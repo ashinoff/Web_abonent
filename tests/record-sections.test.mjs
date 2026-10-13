@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { groupRecordFields, recordSection } from '../public/record-sections.js';
 
-test('real registry headers retain all fields, values and empty cells in semantic sections', () => {
+test('registry sections hide the ordinal while retaining all other fields, values and empty cells', () => {
   const labels = ['№ п/п', 'ТУ', 'Номер ТУСТЕК', 'Номер ТУ', 'ЛС / ЛС СТЕК', 'Наименование договора',
     'Основные реквизиты · Состояние ТУ', 'Основные реквизиты · Субабонент',
     ...['Населенный пункт','Улица','Дом','Телефон','Корпус','Квартира'].map(x=>'Адрес точки учета · '+x),
@@ -16,9 +16,9 @@ test('real registry headers retain all fields, values and empty cells in semanti
   const values = labels.map((_,i)=>i%4===0?'':i===1?0:`Значение ${i}`);
   const groups = groupRecordFields(labels, values);
   const fields = groups.flatMap(g=>g.fields).sort((a,b)=>a.index-b.index);
-  assert.equal(fields.length,labels.length);
-  assert.deepEqual(fields.map(f=>f.label),labels);
-  assert.deepEqual(fields.map(f=>f.value),values.map(String));
+  assert.equal(fields.length,labels.length-1);
+  assert.deepEqual(fields.map(f=>f.label),labels.slice(1));
+  assert.deepEqual(fields.map(f=>f.value),values.slice(1).map(String));
   assert.equal(groups.find(g=>g.key==='tt').fields.length,15);
   assert.equal(groups.find(g=>g.key==='tn').fields.length,5);
   assert.equal(groups.find(g=>g.key==='connection').fields.length,5);

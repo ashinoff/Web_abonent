@@ -1,5 +1,6 @@
 import { splitYears, MONTH_LABELS, yearPath } from './chart-years.js';
 import { fmt, ymLabel } from './analysis-engine.js';
+import { formatEnergy, formatEnergyText } from './energy-format.js';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const EVENT_KINDS = { intrusion: 'Вскрытие / пломбы', magnetic: 'Магнитное поле', electrical: 'Электрические параметры' };
 const MAX_MONTH_EVENTS = 50;
@@ -39,9 +40,9 @@ export function indexChartCases(months, cases = []) {
 function comparisonHTML(comparisons = {}, thresholdMatches = []) {
   return `<dl class="case-comparisons">${[['previous','Предыдущий месяц'],['yearAgo','Тот же месяц год назад'],['median3','Медиана 3 предыдущих месяцев']].map(([key,title])=>{
     const value = comparisons[key];
-    if (!value?.available || !Number.isFinite(value.value)) return `<div data-available="false"><dt>${title}</dt><dd>${Number.isFinite(value?.value) ? `<strong>${fmt(value.value,3)} кВт·ч</strong>` : ''}${escape(value?.reason || 'Нет сопоставимых полных данных.')}</dd></div>`;
+    if (!value?.available || !Number.isFinite(value.value)) return `<div data-available="false"><dt>${title}</dt><dd>${Number.isFinite(value?.value) ? `<strong>${formatEnergy(value.value)} кВт·ч</strong>` : ''}${escape(value?.reason || 'Нет сопоставимых полных данных.')}</dd></div>`;
     const change = Number.isFinite(value.dropPercent) ? value.dropPercent > 0 ? `Снижение на ${fmt(value.dropPercent,1)}%` : value.dropPercent < 0 ? `Рост на ${fmt(-value.dropPercent,1)}%` : 'Без изменения' : 'Изменение не рассчитано';
-    return `<div data-available="true" data-triggered="${thresholdMatches.includes(key)}"><dt>${title}${value.month ? ` · ${escape(monthLabel(value.month))}` : ''}</dt><dd><strong>${fmt(value.value,3)} кВт·ч</strong><span>${escape(change)}</span>${thresholdMatches.includes(key) ? '<small>Порог отбора выполнен</small>' : ''}${value.reason ? `<small>${escape(value.reason)}</small>` : ''}</dd></div>`;
+    return `<div data-available="true" data-triggered="${thresholdMatches.includes(key)}"><dt>${title}${value.month ? ` · ${escape(monthLabel(value.month))}` : ''}</dt><dd><strong>${formatEnergy(value.value)} кВт·ч</strong><span>${escape(change)}</span>${thresholdMatches.includes(key) ? '<small>Порог отбора выполнен</small>' : ''}${value.reason ? `<small>${escape(value.reason)}</small>` : ''}</dd></div>`;
   }).join('')}</dl>`;
 }
 function evidenceHTML(evidence = {}, compact = false) {
@@ -62,8 +63,8 @@ export function journalCaseDetailHTML(item, entry = item, compact = false) {
   const peer = entry.peerContext || item.peerContext;
   const peerHTML = !peer ? '' : peer.available ? `<p class="case-peer${peer.commonDecline ? ' case-peer-common' : ''}">${escape(peer.detail || `Сопоставимых других ЛС в ТП: ${peer.eligiblePeers ?? 0}.`)}${peer.tp ? ` · ${escape(peer.tp)}` : ''}</p>` : `<p class="case-peer">Сравнение с другими ЛС ТП недоступно: ${escape(peer.reason || 'недостаточно сопоставимых данных.')}</p>`;
   const earlier = entry.preExistingDecline || item.preExistingDecline;
-  const earlierHTML = !earlier ? '' : `<p class="case-preexisting">Низкий уровень до журнальных признаков: ${escape(monthLabel(earlier.month))}${Number.isFinite(earlier.value) ? ` · ${fmt(earlier.value,3)} кВт·ч` : ''}. ${earlier.newDecline && Number.isFinite(earlier.additionalDropPercent) ? `В месяце сопоставления расход дополнительно снизился на ${fmt(earlier.additionalDropPercent,1)}% относительно этого уровня.` : 'Дополнительное снижение относительно этого уровня не подтверждено.'}${earlier.reason ? ` ${escape(earlier.reason)}` : ''}</p>`;
-  return `<p class="case-scope">${escape(item.consumptionScope || 'Потребление ЛС + ТУ; события и измерения одного ПУ.')}${item.point?.label ? ` · ТУ: ${escape(item.point.label)}` : ''}</p><div class="case-month-value"><strong>${escape(monthLabel(entry.month))}</strong><span>${Number.isFinite(entry.value) ? fmt(entry.value,3)+' кВт·ч' : 'Нет полного месячного объёма'}</span></div>${comparisonHTML(entry.comparisons || item.comparisons,entry.thresholdMatches || item.thresholdMatches || [])}<p class="case-temporal">${escape(temporalText)}</p>${earlierHTML}${season === true ? '<p class="case-seasonal">Сезонная альтернатива: похожий низкий расход был в том же месяце прошлого года. Сверьте режим работы и сезонную нагрузку.</p>' : ''}${peerHTML}${evidenceHTML(entry.evidence || item.evidence,compact)}${!compact && supporting.length ? `<p class="case-supporting">Месячные признаки основной модели (контекст): ${supporting.map(flag=>escape(typeof flag==='string' ? flag : [flag.code,flag.title,flag.scope].filter(Boolean).join(' · '))).join(', ')}.</p>` : ''}`;
+  const earlierHTML = !earlier ? '' : `<p class="case-preexisting">Низкий уровень до журнальных признаков: ${escape(monthLabel(earlier.month))}${Number.isFinite(earlier.value) ? ` · ${formatEnergy(earlier.value)} кВт·ч` : ''}. ${earlier.newDecline && Number.isFinite(earlier.additionalDropPercent) ? `В месяце сопоставления расход дополнительно снизился на ${fmt(earlier.additionalDropPercent,1)}% относительно этого уровня.` : 'Дополнительное снижение относительно этого уровня не подтверждено.'}${earlier.reason ? ` ${escape(formatEnergyText(earlier.reason))}` : ''}</p>`;
+  return `<p class="case-scope">${escape(item.consumptionScope || 'Потребление ЛС + ТУ; события и измерения одного ПУ.')}${item.point?.label ? ` · ТУ: ${escape(item.point.label)}` : ''}</p><div class="case-month-value"><strong>${escape(monthLabel(entry.month))}</strong><span>${Number.isFinite(entry.value) ? formatEnergy(entry.value)+' кВт·ч' : 'Нет полного месячного объёма'}</span></div>${comparisonHTML(entry.comparisons || item.comparisons,entry.thresholdMatches || item.thresholdMatches || [])}<p class="case-temporal">${escape(temporalText)}</p>${earlierHTML}${season === true ? '<p class="case-seasonal">Сезонная альтернатива: похожий низкий расход был в том же месяце прошлого года. Сверьте режим работы и сезонную нагрузку.</p>' : ''}${peerHTML}${evidenceHTML(entry.evidence || item.evidence,compact)}${!compact && supporting.length ? `<p class="case-supporting">Месячные признаки основной модели (контекст): ${supporting.map(flag=>escape(typeof flag==='string' ? flag : [flag.code,flag.title,flag.scope].filter(Boolean).join(' · '))).join(', ')}.</p>` : ''}`;
 }
 // Match the actual calendar month, including its year. Never clamp an event to
 // either edge of the consumption period, or merge January from different years.
@@ -125,7 +126,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
     if (!list.length) { details.replaceChildren(); return; }
     const monthly = list.filter(isMonthlyEvent), electrical = list.filter(event=>event.kind==='electrical');
     const counts = monthly.length ? `<p class="chart-event-counts">На графике · журнал 46: ${monthly.length} месячных групп · ${monthly.reduce((sum,event)=>sum+registrationCount(event),0)} регистраций${electrical.length ? `; журнал 31: ${electrical.length} сохранённых отметок измерений` : ''}.</p>` : '';
-    details.innerHTML = `<h4>Журнальные отметки в выбранном месяце <span>${list.length}</span></h4>${counts}<ul>${list.slice(0, MAX_MONTH_EVENTS).map(event => `<li data-event-kind="${event.kind}"><div>${!isMonthlyEvent(event) ? `<time>${escape(eventDate(event.at))}</time>` : ''}<span>ПУ ${escape(event.serial)}</span></div><strong>${escape(event.title || EVENT_KINDS[event.kind])}</strong>${isMonthlyEvent(event) ? monthlyEventHTML(event) : `<p>${escape(event.description)}</p>`}</li>`).join('')}</ul>${list.length > MAX_MONTH_EVENTS ? `<p class="chart-event-limit">Показаны первые ${MAX_MONTH_EVENTS} из ${list.length} журнальных отметок. Месячные группы 46 и сводка параметров 31 доступны в Excel-отчёте; все исходные регистрации и измерения — в соответствующих журналах.</p>` : ''}`;
+    details.innerHTML = `<h4>Журнальные отметки в выбранном месяце <span>${list.length}</span></h4>${counts}<ul>${list.slice(0, MAX_MONTH_EVENTS).map(event => `<li data-event-kind="${event.kind}"><div>${!isMonthlyEvent(event) ? `<time>${escape(eventDate(event.at))}</time>` : ''}<span>ПУ ${escape(event.serial)}</span></div><strong>${escape(event.title || EVENT_KINDS[event.kind])}</strong>${isMonthlyEvent(event) ? monthlyEventHTML(event) : `<p>${escape(formatEnergyText(event.description))}</p>`}</li>`).join('')}</ul>${list.length > MAX_MONTH_EVENTS ? `<p class="chart-event-limit">Показаны первые ${MAX_MONTH_EVENTS} из ${list.length} журнальных отметок. Месячные группы 46 и сводка параметров 31 доступны в Excel-отчёте; все исходные регистрации и измерения — в соответствующих журналах.</p>` : ''}`;
   }
   function caseDetails(indices) {
     const details = host.querySelector('.chart-case-details'), list = indices.flatMap(i=>joint.byMonth.get(i) || []);
@@ -152,21 +153,22 @@ export function mountChart(host, { months, values, group = null, baseline = null
     }).join('');
   }
   function reading() {
-    host.querySelector('.chart-reading').innerHTML = `<strong>${escape(ymLabel(months[selected]))}</strong><span>${values[selected] == null ? 'Нет полных данных' : fmt(values[selected], 3) + ' кВт·ч'}${group?.[selected] != null ? `<small>Группа: ${fmt(group[selected], 3)} кВт·ч</small>` : ''}${scenario?.[selected] != null ? `<small>Сценарий: ${fmt(scenario[selected], 3)} кВт·ч</small>` : ''}</span>`;
+    host.querySelector('.chart-reading').innerHTML = `<strong>${escape(ymLabel(months[selected]))}</strong><span>${values[selected] == null ? 'Нет полных данных' : formatEnergy(values[selected]) + ' кВт·ч'}${group?.[selected] != null ? `<small>Группа: ${formatEnergy(group[selected])} кВт·ч</small>` : ''}${scenario?.[selected] != null ? `<small>Сценарий: ${formatEnergy(scenario[selected])} кВт·ч</small>` : ''}</span>`;
     host.querySelector('.month-scrubber').value = selected;
     eventDetails([selected]);
     caseDetails([selected]);
   }
   function drawYearly() {
-    const W = Math.max(280, host.querySelector('.plot').clientWidth || 360), H = 248, L = 47, R = 14, T = 16, B = 40;
+    const W = Math.max(280, host.querySelector('.plot').clientWidth || 360), H = 248, R = 14, T = 16, B = 40;
     const displayed = years.map(series => ({ ...series, plotted: smooth(series.values) }));
     const known = displayed.flatMap(series => series.plotted).filter(v => v != null && Number.isFinite(v));
     const hi = Math.max(10, ...known) * 1.12, lo = Math.min(0, ...known) * 1.12;
+    const L = Math.max(47, Math.ceil(Math.max(formatEnergy(hi).length, formatEnergy(lo).length) * 5.8) + 12);
     const X = m => L + m * (W-L-R)/11, Y = v => T + (H-T-B)*(hi-v)/(hi-lo);
     let grid = '', labels = '', lines = '', hits = '', eventMarks = '', caseMarks = '';
     for (let k = 0; k < 5; k++) {
       const v = lo+(hi-lo)*k/4, y = Y(v);
-      grid += `<line class="plot-grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="plot-y" x="${L-7}" y="${y+4}">${escape(Math.abs(v)>=10000 ? fmt(v/1000,1)+'к' : fmt(v))}</text>`;
+      grid += `<line class="plot-grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="plot-y" x="${L-7}" y="${y+4}">${escape(formatEnergy(v))}</text>`;
     }
     for (const series of displayed) {
       const d = yearPath(series.plotted, X, Y); let dots = '';
@@ -192,7 +194,7 @@ export function mountChart(host, { months, values, group = null, baseline = null
     host.querySelector('.plot').innerHTML = `<svg role="img" aria-label="${escape(title)}: сравнение по годам, январь — декабрь" viewBox="0 0 ${W} ${H}">${grid}${labels}<line class="plot-cursor" x1="${X(selectedMonth)}" x2="${X(selectedMonth)}" y1="${T}" y2="${H-B}"/>${lines}${hits}${eventMarks}${caseMarks}</svg>`;
     host.querySelector('.year-legend').innerHTML = years.map(s => `<span data-year-color="${s.color}">${s.year}${s.current ? ' · текущий' : ''}</span>`).join('');
     host.querySelector('.chart-window').textContent = `${ymLabel(months[0])} — ${ymLabel(months.at(-1))}`;
-    host.querySelector('.chart-reading').innerHTML = `<strong>${MONTH_LABELS[selectedMonth]} · по годам</strong><div class="year-readings">${years.map(s => `<div data-year-color="${s.color}"><strong>${s.year}</strong><span>${!s.included[selectedMonth] ? 'Вне периода отчёта' : s.values[selectedMonth] == null ? 'Нет полных данных' : fmt(s.values[selectedMonth],3)+' кВт·ч'}</span></div>`).join('')}</div>`;
+    host.querySelector('.chart-reading').innerHTML = `<strong>${MONTH_LABELS[selectedMonth]} · по годам</strong><div class="year-readings">${years.map(s => `<div data-year-color="${s.color}"><strong>${s.year}</strong><span>${!s.included[selectedMonth] ? 'Вне периода отчёта' : s.values[selectedMonth] == null ? 'Нет полных данных' : formatEnergy(s.values[selectedMonth])+' кВт·ч'}</span></div>`).join('')}</div>`;
     host.querySelectorAll('[data-year-color]').forEach(el => el.style.setProperty('--year-color', el.dataset.yearColor));
     eventDetails(months.flatMap(({ m }, i) => m === selectedMonth ? [i] : []));
     caseDetails(months.flatMap(({m},i)=>m===selectedMonth ? [i] : []));
@@ -209,21 +211,22 @@ export function mountChart(host, { months, values, group = null, baseline = null
       ? 'Каждый цвет — отдельный год. Нажмите на месяц для сравнения. Пропуски и месяцы вне периода отчёта не считаются нулём. Линии проходят через месячные точки. Сглаживание применяется только при выборе в списке; значения под графиком — исходные.'
       : 'Нажмите на график, чтобы увидеть месяц. Пропуски — нет полных данных; точки у нуля — ≤ 3 кВт·ч. Сглаживание и масштаб меняют только график.';
     if (yearly) { drawYearly(); return; }
-    const W = Math.max(280, host.clientWidth || 360), H = 248, L = 47, R = 14, T = 16, B = 40, n = end - start + 1;
+    const W = Math.max(280, host.clientWidth || 360), H = 248, R = 14, T = 16, B = 40, n = end - start + 1;
     const fact = smooth(values), peers = group ? smooth(group) : null, scn = scenario ? smooth(scenario) : null;
     const known = [...fact.slice(start, end + 1), ...(peers?.slice(start, end + 1) || []), ...(scn?.slice(start,end+1) || []), baseline].filter(v => v != null && Number.isFinite(v));
     const hi = Math.max(10, ...known) * 1.12, lo = Math.min(0, ...known) * 1.12;
+    const L = Math.max(47, Math.ceil(Math.max(formatEnergy(hi).length, formatEnergy(lo).length) * 5.8) + 12);
     const X = i => L + (i - start) * (W - L - R) / Math.max(1, n - 1), Y = v => T + (H-T-B) * (hi - v) / (hi - lo);
     const path = arr => { let d = '', pen = false; for (let i = start; i <= end; i++) { if (arr[i] == null) { pen = false; continue; } d += (pen?'L':'M') + X(i).toFixed(1) + ',' + Y(arr[i]).toFixed(1); pen = true; } return d; };
     let grid = '', labels = '', hits = '', eventMarks = '', caseBands = '', caseMarks = '';
-    for (let k = 0; k < 5; k++) { const v = lo + (hi-lo)*k/4, y = Y(v); grid += `<line class="plot-grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="plot-y" x="${L-7}" y="${y+4}">${escape(Math.abs(v) >= 10000 ? fmt(v/1000,1)+'к' : fmt(v))}</text>`; }
+    for (let k = 0; k < 5; k++) { const v = lo + (hi-lo)*k/4, y = Y(v); grid += `<line class="plot-grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="plot-y" x="${L-7}" y="${y+4}">${escape(formatEnergy(v))}</text>`; }
     const step = Math.max(1, Math.ceil(n / (W < 450 ? 4 : 7)));
     for (let i = start; i <= end; i++) {
       const x = X(i), half = (W-L-R)/Math.max(1,n-1)/2;
       if (i === end || (i-start)%step === 0 && end-i >= step) labels += `<text class="plot-x" text-anchor="${i===start?'start':i===end?'end':'middle'}" x="${x}" y="${H-12}">${escape(ymLabel(months[i]))}</text>`;
       if (values[i] == null) hits += `<rect class="plot-missing" x="${Math.max(L,x-half)}" y="${T}" width="${Math.min(W-R,x+half)-Math.max(L,x-half)}" height="${H-T-B}"/>`;
       if (fact[i] != null) hits += `<circle class="${values[i] <= 3 ? 'plot-zero' : 'plot-dot'}" cx="${x}" cy="${Y(fact[i])}" r="${n>80?1.5:3}"/>`;
-      hits += `<rect class="plot-hit" data-month="${i}" x="${Math.max(0,x-half)}" y="0" width="${Math.max(12,half*2)}" height="${H}" tabindex="0" role="button" aria-label="${escape(ymLabel(months[i]) + ': ' + (values[i] == null ? 'нет данных' : fmt(values[i],3)+' кВт·ч'))}"/>`;
+      hits += `<rect class="plot-hit" data-month="${i}" x="${Math.max(0,x-half)}" y="0" width="${Math.max(12,half*2)}" height="${H}" tabindex="0" role="button" aria-label="${escape(ymLabel(months[i]) + ': ' + (values[i] == null ? 'нет данных' : formatEnergy(values[i])+' кВт·ч'))}"/>`;
       eventMarks += markers(i, x, fact[i] == null ? T + 10 : Math.max(T + 6, Math.min(H-B-20, Y(fact[i])-12)));
       if(joint.byMonth.has(i)) {
         const left=Math.max(L,x-half),right=Math.min(W-R,x+half),priority=joint.byMonth.get(i).some(({item})=>item.priority==='high') ? 'high' : 'check';

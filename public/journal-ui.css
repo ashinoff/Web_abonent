@@ -27,6 +27,7 @@
 .electrical-finding summary{cursor:pointer;color:#5d718b;font-weight:600;line-height:1.6;overflow-wrap:anywhere}
 .electrical-finding summary small{display:block;color:#8b769d;font-weight:400}
 .electrical-finding p{font-size:11px;line-height:1.7;color:#746880;overflow-wrap:anywhere;margin:9px 0 0}
+@media(max-width:700px){#analysis-body>#analysis-chart:first-child{margin-top:0}}
 .chart-event-legend{display:flex;flex-wrap:wrap;gap:8px 13px;color:#7b8b9e;font-size:10px;margin-top:13px}
 .chart-event-legend>small{flex-basis:100%;font-size:9px;line-height:1.65;color:#8895a7}
 .chart-event-legend span::before{content:'';display:inline-block;width:8px;height:8px;vertical-align:middle;margin-right:6px;background:var(--event-color);border-radius:2px}

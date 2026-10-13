@@ -1,4 +1,5 @@
 import { flagObservation } from './analysis-observations.js';
+import { formatEnergy, formatEnergyText } from './energy-format.js';
 
 const clean = value => String(value || '').trim().replace(/\.+$/, '');
 const month = value => String(value || '').replace(/^(\d{4})-(\d{2})$/, '$2.$1');
@@ -53,10 +54,10 @@ function consumptionText(row) {
     const text = [flag.title];
     if (comparison.months.length) text.push('Месяцы: ' + comparison.months.map(month).join(', '));
     if (comparison.month && Number.isFinite(comparison.value)) {
-      text.push(`Сопоставление за ${month(comparison.month)}: ПО ${number(comparison.value)} кВт·ч`);
+      text.push(`Сопоставление за ${month(comparison.month)}: ПО ${formatEnergy(comparison.value)} кВт·ч`);
       for (const [key, value] of Object.entries(comparison.comparisons)) {
         const label = { previous: 'Предыдущий месяц', yearAgo: 'Тот же месяц прошлого года', median3: 'Медиана трёх предыдущих месяцев' }[key];
-        text.push(value.available ? `${label}: ${number(value.value)} кВт·ч; ${value.dropPercent >= 0 ? 'снижение' : 'рост'} ${number(Math.abs(value.dropPercent))}%` : `${label}: нет сравнения (${value.reason})`);
+        text.push(value.available ? `${label}: ${formatEnergy(value.value)} кВт·ч; ${value.dropPercent >= 0 ? 'снижение' : 'рост'} ${number(Math.abs(value.dropPercent))}%` : `${label}: нет сравнения (${value.reason})`);
       }
     }
     text.push(comparison.preExistingReason || { same_month: 'Событие и расход совпали по месяцу; порядок изменений внутри месяца неизвестен', after: 'Снижение в последующем месяце; причинная связь требует проверки', journals_only: 'Снижение потребления не подтверждено' }[comparison.temporalRelation]);
@@ -67,7 +68,7 @@ function consumptionText(row) {
   if (!lines.length) lines.push(result.cls === 'unknown' ? 'Недостаточно данных для анализа потребления' : result.cls === 'dead' ? 'Практически нулевое потребление; проверить статус договора и отключения' : 'Претензий по включённым правилам потребления не выявлено');
   if (result.incomplete) lines.push(`Неполных месяцев: ${result.incomplete}; пропуски не приняты за ноль`);
   if (result.negative) lines.push('Есть отрицательные корректировки; они исключены из поиска признаков');
-  return [`ЛС ${result.account}; собственная ТУ${result.point ? ': ' + result.point : ''}`, ...distinct(lines)].join('\n');
+  return formatEnergyText([`ЛС ${result.account}; собственная ТУ${result.point ? ': ' + result.point : ''}`, ...distinct(lines)].join('\n'));
 }
 export function journalReportSheet(report, context = {}) {
   if (!Array.isArray(report?.rows)) throw new Error('Нет результатов анализа журналов для выгрузки.');

@@ -1,4 +1,6 @@
 import { clean, norm, fieldKey } from './core.js';
+import { formatEnergy, isEnergyLabel } from './energy-format.js';
+import { numeric } from './monthly.js';
 
 const definitions = [
   ['account', 'Лицевой счёт и договор'], ['point', 'Точка учёта'],
@@ -24,10 +26,14 @@ export function recordSection(label) {
 export function groupRecordFields(labels, values) {
   const groups = new Map(definitions.map(([key, title]) => [key, { key, title, fields: [] }]));
   labels.forEach((label, index) => {
+    const leaf = norm(label).split(' · ').at(-1);
+    if (/^(?:№\s*)?п\s*[/.]\s*п\.?$|^порядковый номер$/.test(leaf)) return;
     const group = groups.get(recordSection(label));
     const parts = clean(label).split(' · ');
     // Section titles already carry the original Excel group; retain the full label for copying.
-    group.fields.push({ index, label, displayLabel: parts.length > 1 && group.key !== 'other' ? parts.slice(1).join(' · ') : label, value: clean(values[index]) });
+    const value = clean(values[index]), amount = isEnergyLabel(label) ? numeric(value) : null;
+    group.fields.push({ index, label, displayLabel: parts.length > 1 && group.key !== 'other' ? parts.slice(1).join(' · ') : label,
+      value: amount == null ? value : formatEnergy(amount) });
   });
   return [...groups.values()].filter(group => group.fields.length);
 }
