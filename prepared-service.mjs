@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { findSource, sourceRoleKeys } from './public/source.js';
 import { JOURNAL_ANALYSIS_VERSION, EVENTS_PACKAGE_VERSION } from './public/journals.js';
 import { MONTHLY_PARSER_VERSION } from './public/monthly.js';
+import { PREPARATION_TIMEOUT_MS } from './public/preparation-policy.js';
 import { resScope,preparationIssue } from './admin-store.mjs';
 
 const maxBytes = 40 * 1048576;
@@ -75,7 +76,7 @@ async function runLimitedChild(args, containerMB,signal) {
     const abort=()=>{reason='Подготовка остановлена администратором.';child.kill('SIGKILL');};
     signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
-    const timeout = setTimeout(() => { reason = 'Подготовка Excel превысила 120 секунд.'; child.kill('SIGKILL'); }, 120000);
+    const timeout = setTimeout(() => { reason = `Подготовка Excel превысила ${PREPARATION_TIMEOUT_MS / 1000} секунд.`; child.kill('SIGKILL'); }, PREPARATION_TIMEOUT_MS);
     // V8 heap limits do not cover workbook buffers and native allocations.
     // Watch actual RSS before the 512 MB container OOM killer acts.
     const monitor = setInterval(async () => {
@@ -150,6 +151,7 @@ export function createPreparedService({ source, store, yandex }) {
     throw new Error('Слишком много перенаправлений при скачивании.');
   }
   async function prepare(directory, role, filename,signal) {
+    const started = performance.now();
     try {
       const path = join(directory, 'workbook');
       const output = join(directory, 'package.json');
@@ -158,11 +160,13 @@ export function createPreparedService({ source, store, yandex }) {
       signal.throwIfAborted();
       const { packageMB } = preparationLimits(containerMB);
       if ((await stat(output)).size > packageMB * 1048576) throw new Error(`Пакет Excel превышает лимит ${packageMB} МБ.`);
-      return await readFile(output, 'utf8');
+      const json = await readFile(output, 'utf8');
+      console.info(`Excel [${role}]: подготовлен за ${Math.round((performance.now() - started) / 1000)} с.`);
+      return json;
     } catch (error) {
-      if (/heap out of memory|allocation failed/i.test(error.message || ''))
-        throw new Error('Файл превышает доступный лимит памяти подготовки Excel.');
-      throw new Error((error.message || 'Ошибка подготовки Excel.').trim().slice(0, 400));
+      const message = /heap out of memory|allocation failed/i.test(error.message || '')
+        ? 'Файл превышает доступный лимит памяти подготовки Excel.' : error.message || 'Ошибка подготовки Excel.';
+      throw new Error(`[${role}; ${Math.round((performance.now() - started) / 1000)} с] ${message.trim().slice(0, 350)}`);
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
   const readMeta = (path, role) => store.getMeta ? store.getMeta(source, path, role) : store.get(source, path, role);

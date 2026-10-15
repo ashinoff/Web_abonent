@@ -43,7 +43,8 @@ export function initSourceFiles(root, { onRead, onRefresh }) {
         card.querySelector('.source-file-name').textContent = source.file?.name || source.saved?.name || source.expected;
         card.querySelector('.source-file-meta').textContent = [source.meta, fileMeta(source.file), source.saved ? 'Выбран вручную' : 'Автоматический выбор'].filter(Boolean).join(' · ');
         const optional = ['instant', 'events'].includes(role), failed = source.state === 'error' || !optional && source.state === 'missing';
-        card.querySelector('.source-file-status').textContent = [source.saved && !source.file && source.state === 'missing' ? 'Выбранный файл больше не найден в папке.' : source.message, failed && res ? 'Выберите файл вручную или повторите чтение.' : ''].filter(Boolean).join(' ');
+        const retryHint = source.state === 'error' && source.file ? 'Повторите чтение файла из папки РЭС.' : 'Выберите файл вручную или повторите чтение.';
+        card.querySelector('.source-file-status').textContent = [source.saved && !source.file && source.state === 'missing' ? 'Выбранный файл больше не найден в папке.' : source.message, failed && res ? retryHint : ''].filter(Boolean).join(' ');
         const select = card.querySelector('select'), choose = card.querySelector('[data-choose-source]'), panel = card.querySelector('.manual-source');
         const value = changed ? source.file?.path || '' : select.value || source.file?.path || '';
         if (select.dataset.options !== options) { select.innerHTML = options; select.dataset.options = options; }

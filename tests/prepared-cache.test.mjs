@@ -198,6 +198,65 @@ test('cancelled fetch never returns an offline fallback or writes its late respo
   assert.equal((await listOfflineCopies(source))[0].files[0].revision, '1');
 });
 
+test('a broken prepared response retries the same GET and saves only the complete package', async t => {
+  let attempts = 0; const signals = [], urls = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    attempts++; signals.push(options.signal); urls.push(String(url));
+    if (attempts === 1) throw new TypeError('Failed to fetch');
+    if (attempts === 2) {
+      const broken = response('registry', 'partial');
+      broken.blob = async () => { throw new TypeError('connection reset during body'); };
+      return broken;
+    }
+    return response('registry', 'complete');
+  });
+  const result = await fetchPrepared({ source, ...registry });
+  assert.equal(result.revision, 'complete'); assert.equal(result.data.version, 'complete');
+  assert.equal(attempts, 3); assert.equal(new Set(urls).size, 1); assert.equal(new Set(signals).size, 1);
+  const copies = await listOfflineCopies(source); assert.equal(copies.length, 1);
+  assert.equal(copies[0].files[0].revision, 'complete');
+});
+
+test('repeated transport failures are bounded and never save an incomplete package', async t => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('Failed to fetch'); });
+  await assert.rejects(fetchPrepared({ source, ...registry }), error => error.code === 'network_error' && /Яндекс Диска/.test(error.message));
+  assert.equal(fetch.mock.callCount(), 3); assert.deepEqual(await listOfflineCopies(source), []);
+});
+
+test('memory, timeout and access responses are not automatically retried', async t => {
+  for (const [status, code] of [[503,'memory_limit'],[503,'preparation_timeout'],[401,'auth_required'],[403,'res_blocked'],[409,'res_changed'],[502,'workbook_error']]) {
+    const fetch = t.mock.method(globalThis, 'fetch', async () => Response.json({ code, error: 'Проверка ошибки.' }, { status }));
+    await assert.rejects(fetchPrepared({ source, ...registry }), error => error.code === code && error.status === status);
+    assert.equal(fetch.mock.callCount(), 1, code);
+  }
+  assert.deepEqual(await listOfflineCopies(source), []);
+});
+
+test('stopping during the retry delay cancels the wait and prevents another request', async t => {
+  const waiting = waitFor(), controller = new AbortController(), original = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, milliseconds, ...args) => {
+    const timer = original(callback, milliseconds, ...args); if (milliseconds === 500) waiting.resolve(); return timer;
+  });
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('Failed to fetch'); });
+  const result = fetchPrepared({ source, ...registry, signal: controller.signal });
+  const rejection = assert.rejects(result, { name: 'AbortError' });
+  await waiting.promise; controller.abort(); await rejection;
+  assert.equal(fetch.mock.callCount(), 1); assert.deepEqual(await listOfflineCopies(source), []);
+});
+
+test('all retry attempts share one deadline and a timeout during the delay is readable', async t => {
+  const timeout = new AbortController(), waiting = waitFor(), original = globalThis.setTimeout;
+  t.mock.method(AbortSignal, 'timeout', milliseconds => { assert.ok(milliseconds > 240000 && milliseconds < 300000); return timeout.signal; });
+  t.mock.method(globalThis, 'setTimeout', (callback, milliseconds, ...args) => {
+    const timer = original(callback, milliseconds, ...args); if (milliseconds === 500) waiting.resolve(); return timer;
+  });
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('Failed to fetch'); });
+  const result = fetchPrepared({ source, ...registry });
+  const rejection = assert.rejects(result, error => error.code === 'preparation_timeout' && /из папки РЭС/.test(error.message));
+  await waiting.promise; timeout.abort(new DOMException('network deadline', 'TimeoutError')); await rejection;
+  assert.equal(fetch.mock.callCount(), 1); assert.deepEqual(await listOfflineCopies(source), []);
+});
+
 test('a download already in flight cannot recreate a deleted copy, including across tabs', async t => {
   network(t); await fetchPrepared({ source, ...registry });
   const entered = waitFor(), late = waitFor();

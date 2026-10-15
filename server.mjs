@@ -14,6 +14,7 @@ import { createAccessControl,createAdminHandler } from './access-control.mjs';
 import { resScope } from './admin-store.mjs';
 import { superAdminConfig } from './accounts.mjs';
 import { sourceRoleKeys } from './public/source.js';
+import { PREPARATION_BUILD, PREPARATION_TIMEOUT_MS } from './public/preparation-policy.js';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const maxBytes = 40 * 1024 * 1024;
@@ -143,7 +144,8 @@ export function createServer(options = {}) {
       if (!['GET','HEAD'].includes(req.method)) { sendJson(res,405,{ error:'Метод не поддерживается.' }); return; }
       if (url.pathname === '/api/config') {
         const user=access.enabled&&req.headers.cookie?.includes('abonent_session=')?await access.identity(req):null;
-        sendJson(res, 200, { publicUrl:access.enabled&&!user?'':key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected, maps:{ geocoder:geocoder.hostname },auth:{enabled:access.enabled} }); return;
+        sendJson(res, 200, { publicUrl:access.enabled&&!user?'':key, configured, proxy: true, maxFileMB: 40, prepared: Boolean(prepared), databaseConnected,
+          preparation: { build: PREPARATION_BUILD, registryReader: 'streaming-xlsx', timeoutSeconds: PREPARATION_TIMEOUT_MS / 1000 }, maps:{ geocoder:geocoder.hostname },auth:{enabled:access.enabled} }); return;
       }
       if (url.pathname === '/api/diagnostics') {
         let database = { state: 'not_configured', issue: 'not_configured' }, catalog = { state: 'unavailable' };
@@ -205,9 +207,11 @@ export function createServer(options = {}) {
           if (req.method === 'HEAD') res.end(); else res.end(result.payload);
         } catch (error) {
           if(error.status){sendJson(res,error.status,{code:error.code,error:error.message});return;}
-          console.warn('Не удалось подготовить Excel:', error.message);
+          console.warn(`Не удалось подготовить Excel [${role}]:`, error.message);
           if (/памяти|Пакет Excel превышает лимит/i.test(error.message)) {
             sendJson(res, 503, { code: 'memory_limit', error: 'Для подготовки этой книги не хватает памяти Amvera. Нужен тариф с большей памятью или меньший файл.' });
+          } else if (/превысила|timeout|timed?\s*out/i.test(error.message)) {
+            sendJson(res, 503, { code: 'preparation_timeout', error: 'Подготовка файла с Яндекс Диска превысила время ожидания. Повторите чтение из папки РЭС.' });
           } else sendJson(res, 502, { error: 'Не удалось подготовить Excel на сервере. Проверьте файл или повторите позже.' });
         }
         return;
@@ -298,7 +302,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } catch (error) { connected = false; server.setDatabaseStatus(false); console.error('DB error:', error.message); }
     return false;
   };
-  server.listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}`));
+  server.listen(port, '0.0.0.0', () => console.log(`Абонент: порт ${port}; сборка ${PREPARATION_BUILD}; подготовка Excel до ${PREPARATION_TIMEOUT_MS / 1000} с.`));
   // Serve the shell and diagnostics even while PostgreSQL is slow or unavailable.
   if (server.preparedStore) await checkDb();
   else console.error('DB error: задайте DB_HOST, DB_PORT, DB_NAME, DB_USER и DB_PASSWORD.');

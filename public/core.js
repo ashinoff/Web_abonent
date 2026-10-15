@@ -17,11 +17,16 @@ const aliases = {
   power: ['максимальная мощность', 'мощность'], point: ['номер тустек', 'номер ту стек', 'номер точки учета', 'код точки учета'],
   pointNumber: ['номер ту', '№ ту'], pointName: ['ту', 'точка учета', 'наименование ту', 'наименование точки учета', 'объект учета'],
 };
+// Header names are fixed. A registry can contain millions of values: do not
+// rebuild and traverse the complete alias list for every source cell.
+const aliasFields = new Map();
+for (const [key, options] of Object.entries(aliases)) for (const option of options) if (!aliasFields.has(option)) aliasFields.set(option, key);
 export function fieldKey(label) {
   const parts = norm(label).split(' · ').reverse();
   for (const part of parts) {
     if (/^примечани[ея](?: \(\d+\))?$/.test(part)) return 'note';
-    for (const [key, options] of Object.entries(aliases)) if (options.includes(part)) return key;
+    const key = aliasFields.get(part);
+    if (key) return key;
   }
   return null;
 }

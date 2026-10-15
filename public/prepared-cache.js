@@ -1,5 +1,6 @@
 import { requestSignal } from './load-session.js';
 import { sourceRoleKeys } from './source.js';
+import { PREPARED_REQUEST_TIMEOUT_MS } from './preparation-policy.js';
 
 const dbName = 'abonent-prepared-v1';
 const packageKey = ({ source, path, role }) => JSON.stringify([source, path, role]);
@@ -121,12 +122,8 @@ export function deleteOfflineCopy(source, resPath) {
   });
 }
 
-async function networkPackage({ path, role, saved, signal, fresh = false }) {
-  signal?.throwIfAborted();
-  if (!globalThis.navigator.onLine) throw new Error('Нет подключения к сети.');
-  const url = new URL('./api/prepared', globalThis.location.href);
-  url.searchParams.set('path', path); url.searchParams.set('role', role);
-  const response = await fetch(url, { cache: 'no-store', signal: requestSignal(signal, 150000),
+async function requestPackage(url, saved, signal, fresh) {
+  const response = await fetch(url, { cache: 'no-store', signal,
     headers: saved?.revision ? { 'If-None-Match': `"${saved.revision}"` } : {} });
   signal?.throwIfAborted();
   const stale = response.headers.get('X-Prepared-Stale') === '1';
@@ -141,6 +138,43 @@ async function networkPackage({ path, role, saved, signal, fresh = false }) {
   const body = await response.blob();
   signal?.throwIfAborted();
   return { body, revision: response.headers.get('X-Prepared-Revision'), savedAt: Date.now(), stale };
+}
+
+function retryDelay(milliseconds, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, milliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+async function networkPackage({ path, role, saved, signal, fresh = false }) {
+  signal?.throwIfAborted();
+  if (!globalThis.navigator.onLine) throw new Error('Нет подключения к сети.');
+  const url = new URL('./api/prepared', globalThis.location.href);
+  url.searchParams.set('path', path); url.searchParams.set('role', role);
+  const request = requestSignal(signal, PREPARED_REQUEST_TIMEOUT_MS);
+  // GET is idempotent. The server shares one preparation for this file across
+  // disconnected requests; retry only transport failures, never access denials,
+  // workbook errors or memory limits. All attempts share the same deadline.
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { return await requestPackage(url, saved, request, fresh); }
+      catch (error) {
+        signal?.throwIfAborted();
+        request.throwIfAborted();
+        if (!(error instanceof TypeError) || error.status || error.code) throw error;
+        if (!globalThis.navigator.onLine) throw new Error('Нет подключения к сети.');
+        if (attempt === 2) throw Object.assign(new Error('Соединение с сервером прервалось при загрузке файла с Яндекс Диска. Повторите чтение после восстановления связи.'), { code: 'network_error' });
+        await retryDelay(500 * (attempt + 1), request);
+      }
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (request.aborted && request.reason?.name === 'TimeoutError') throw Object.assign(new Error('Сервер не завершил подготовку за время ожидания. Повторите чтение файла из папки РЭС.'), { code: 'preparation_timeout' });
+    throw error;
+  }
 }
 
 // Shrink an existing raw journal copy without a network request. Keep the
