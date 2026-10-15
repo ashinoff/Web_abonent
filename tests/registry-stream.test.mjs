@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import XLSX from '@e965/xlsx';
+import { writeRegistryXLSX } from '../registry-stream.mjs';
+import { prepareWorkbook } from '../prepared-workbook.mjs';
+import { preparationChildFlags } from '../prepared-service.mjs';
+import { unpackRegistry } from '../public/prepared-data.js';
+import { buildIndex, search, listNotes } from '../public/core.js';
+
+async function fixture(t, sheets, options = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'registry-stream-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const book = XLSX.utils.book_new();
+  for (const [name, rows] of Object.entries(sheets)) XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), name);
+  if (options.date1904) book.Workbook = { WBProps: { date1904: true } };
+  options.mutate?.(book);
+  const bytes = XLSX.write(book, { type: 'buffer', bookType: options.bookType || 'xlsx', bookSST: options.shared, cellDates: options.cellDates });
+  const path = join(dir, 'source.xlsx'), output = join(dir, 'package.json');
+  await writeFile(path, bytes);
+  return { dir, path, output, bytes };
+}
+
+const simpleHeader = ['Номер счетчика', 'ЛС', 'Наименование договора', 'ТУ', 'ТП', 'Адрес', 'Примечание'];
+for (const shared of [false, true]) for (const date1904 of [false, true]) {
+  test(`streaming registry matches every SheetJS field: shared=${shared}, date1904=${date1904}`, async t => {
+    const top = ['№ п/п', 'ТУ', 'Номер ТУСТЕК', 'Номер ТУ', 'ЛС / ЛС СТЕК', 'Наименование договора', 'Основные реквизиты', '', 'Адрес точки учета', '', '', 'Прибор учета', '', '', 'События', '', 'Характеристики ТТ', '', 'Примечание', 'Примечание', 'Другой столбец', 'Дата', 'Число', 'Показания', 'Формула', 'Логическое', 'Ошибка'];
+    const lower = ['', '', '', '', '', '', 'Состояние ТУ', 'Комментарий', 'Населенный пункт', 'Улица', 'Дом', 'Номер счетчика', 'Вид счетчика', 'Коэффициент трансформации', 'Дата установки', 'Показания', 'Заводской номер ТТ', 'Первичный ток ТТ', '', '', '', '', '', '', '', '', ''];
+    const data = [1, 'Объект 1', 12345678901234, '00001', 123456789012, 'Учебный потребитель', 'Вкл', 'строка\nс пробелами', 'Учебный город', 'Учебная улица', 10, 123, 'Модель', 20, 46000.5, 125.75, '00001234567890123456789', 500, 'Проверить ввод', 'Сверить пломбу', 'Сохранить & < > " _x000D_', new Date('2026-01-02T03:04:05Z'), 0.12345, -0.125, 42.75, true, ''];
+    const rows = [['Расширенный список'], ['Дата формирования отчета'], [], ['Всего записей', 3], top, lower, data, [2, 'Объект 2', '', '', '000000000002', '', '', '', '', '', '', '000000000000000000123'], top, lower, ['Итого', '', '', '', 'не строка реестра'], [3, 'Объект без ПУ', '', '', '000000000003']];
+    const source = await fixture(t, { Реестр: rows, Пояснения: [['справочный лист']], Пустой: [] }, {
+      shared, date1904, cellDates: true,
+      mutate(book) {
+        const ws = book.Sheets.Реестр;
+        ws['!merges'] = ['G5:H5', 'I5:K5', 'L5:N5', 'O5:P5', 'Q5:R5'].map(XLSX.utils.decode_range);
+        ws.L7.z = '000000'; ws.O7.z = 'dd.mm.yyyy hh:mm:ss'; ws.V7.z = 'yyyy-mm-dd hh:mm:ss';
+        ws.W7.z = '0.00%'; ws.X7.z = '#,##0.000'; ws.Y7.f = '40+2.75'; ws.AA7 = { t: 'e', v: 7 };
+      },
+    });
+    await writeRegistryXLSX(source.path, source.output, 'Расширенный список.xlsx');
+    const actual = JSON.parse(await readFile(source.output, 'utf8'));
+    assert.deepEqual(actual, prepareWorkbook(source.bytes, 'registry', 'Расширенный список.xlsx'));
+    const index = buildIndex(unpackRegistry(actual));
+    assert.equal(index.records.length, 3);
+    assert.equal(search(index, { query: '000123' }).total, 1);
+    assert.equal(index.records[0].fields.account, '123456789012');
+    assert.equal(index.records[0].values[16], '00001234567890123456789');
+    assert.equal(listNotes(index).total, 2);
+    assert.ok(!(await readdir(source.dir)).some(name => name.startsWith('xlsx-strings-')));
+  });
+}
+
+test('source row numbers, sparse rows and a late additional column stay unchanged', async t => {
+  const rows = [simpleHeader, ['001', '0001', 'Учебный потребитель'], [], ['002', '0001']];
+  rows[120] = ['003', '0002', '', '', '', '', 'Примечание'];
+  rows[120][79] = 'Поздний столбец';
+  const f = await fixture(t, { Лист1: rows });
+  await writeRegistryXLSX(f.path, f.output, 'Реестр.xlsx');
+  const actual = JSON.parse(await readFile(f.output, 'utf8'));
+  assert.deepEqual(actual, prepareWorkbook(f.bytes, 'registry', 'Реестр.xlsx'));
+  assert.deepEqual(actual.sheets[0].rows.map(row => row[0]), [2, 4, 121]);
+  assert.equal(actual.sheets[0].layout.labels.length, 80);
+  assert.equal(actual.sheets[0].rows.at(-1)[1][79], 'Поздний столбец');
+});
+
+test('one header per worksheet, skipped sheets and empty registry sheets match the existing parser', async t => {
+  const f = await fixture(t, { НетШапки: [['справка']], БезДанных: [simpleHeader], Первый: [simpleHeader, ['001', '0001']], Второй: [simpleHeader, ['002', '0001']] });
+  await writeRegistryXLSX(f.path, f.output);
+  assert.deepEqual(JSON.parse(await readFile(f.output, 'utf8')), prepareWorkbook(f.bytes, 'registry'));
+});
+
+test('numeric identifiers damaged by Excel fail before saving a usable package and clean up strings', async t => {
+  for (const z of ['General', '0000000000000000']) {
+    const f = await fixture(t, { Реестр: [simpleHeader, [1234567890123456, '0001']] }, { mutate: book => { book.Sheets.Реестр.A2.z = z; } });
+    await assert.rejects(writeRegistryXLSX(f.path, f.output), /Строка 2:.*Excel мог округлить/);
+    assert.throws(() => prepareWorkbook(f.bytes, 'registry'), /Строка 2:.*Excel мог округлить/);
+    assert.ok(!(await readdir(f.dir)).some(name => name.startsWith('xlsx-strings-')));
+  }
+});
+
+test('row/column safeguards and manual mapping requirements remain in force', async t => {
+  const broad = await fixture(t, { Лист1: [simpleHeader, ['001', '0001']] }, { mutate: book => { book.Sheets.Лист1['!ref'] = 'A1:IW2'; } });
+  await assert.rejects(writeRegistryXLSX(broad.path, broad.output), /100 000 строк и 256 столбцов/);
+  const long = await fixture(t, { Лист1: [simpleHeader, ['001', '0001']] }, { mutate: book => { book.Sheets.Лист1['!ref'] = 'A1:G100003'; } });
+  await assert.rejects(writeRegistryXLSX(long.path, long.output), /100 000 строк и 256 столбцов/);
+  const missing = await fixture(t, { Лист1: [['Номер счетчика', 'Адрес'], ['001', 'Учебный адрес']] });
+  await assert.rejects(writeRegistryXLSX(missing.path, missing.output), /Сопоставьте столбцы/);
+  const noRows = await fixture(t, { Лист1: [simpleHeader] });
+  await assert.rejects(writeRegistryXLSX(noRows.path, noRows.output), /Нет строк с номером ПУ или ЛС/);
+});
+
+test('preparation process detects XLSX by signature and keeps the old XLS parser', async t => {
+  for (const bookType of ['xlsx', 'biff8']) {
+    const f = await fixture(t, { Лист1: [simpleHeader, ['000001', '00000001']] }, { bookType });
+    const flags = await preparationChildFlags(f.path, 'registry', 'Расширенный список.xls', 512);
+    assert.deepEqual(flags, bookType === 'xlsx' ? ['--max-old-space-size=64', '--max-semi-space-size=4'] : ['--max-old-space-size=128']);
+    const child = spawn(process.execPath, [...flags, new URL('../prepare-child.mjs', import.meta.url).pathname, f.path, f.output, 'registry', 'Расширенный список.xls'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let error = ''; child.stderr.on('data', chunk => { error += chunk; });
+    const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    assert.equal(code, 0, error);
+    assert.deepEqual(JSON.parse(await readFile(f.output, 'utf8')), prepareWorkbook(f.bytes, 'registry', 'Расширенный список.xls'));
+    assert.deepEqual(await preparationChildFlags(f.path, 'instant', '31.xlsx', 512), ['--max-old-space-size=128']);
+  }
+});

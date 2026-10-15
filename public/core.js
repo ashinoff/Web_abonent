@@ -80,16 +80,27 @@ export function detectLayout(matrix, merges = []) {
   return { start, end, labels, mapping, flattened };
 }
 export function columnName(n) { let result = ''; for (n++; n; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result; }
+export function identifierColumns(layout) {
+  const columns = new Set(['meter', 'account', 'point', 'pointNumber', 'phone'].map(key => layout.mapping[key]).filter(Number.isInteger));
+  for (const [c, label] of layout.labels.entries()) if (/номер|телефон|лицевой|^лс/i.test(label)) columns.add(c);
+  return columns;
+}
+export function restoreIdentifier(value, cell, row) {
+  if (cell?.t !== 'n' || !Number.isInteger(cell.v)) return value;
+  if (!Number.isSafeInteger(cell.v) || Math.abs(cell.v) >= 1e15) throw new Error(`Строка ${row}: длинный номер хранится в Excel как число. Установите текстовый формат и восстановите исходный номер — Excel мог округлить его.`);
+  return /e[+-]\d+/i.test(String(value)) || !cell.z || cell.z === 'General' ? String(cell.v) : value;
+}
+export function isRegistryDataRow(values) {
+  return values.some(Boolean) && headerScore(values) < 8 && !/^(итого|всего)(\s|$)/i.test(values[0]);
+}
 export function restoreNumericIdentifiers(matrix, worksheet, layout) {
   // Excel's General display format switches long IDs to scientific notation.
   // Read their stored integer value without losing intentional zero padding.
-  const columns = new Set(['meter', 'account', 'point', 'pointNumber', 'phone'].map(key => layout.mapping[key]).filter(Number.isInteger));
-  for (const [c, label] of layout.labels.entries()) if (/номер|телефон|лицевой|^лс/i.test(label)) columns.add(c);
+  const columns = identifierColumns(layout);
   for (let r = layout.end + 1; r < matrix.length; r++) for (const c of columns) {
     const cell = worksheet['!data'] ? worksheet['!data'][r]?.[c] : worksheet[`${columnName(c)}${r + 1}`];
-    if (cell?.t !== 'n' || !Number.isInteger(cell.v)) continue;
-    if (!Number.isSafeInteger(cell.v) || Math.abs(cell.v) >= 1e15) throw new Error(`Строка ${r + 1}: длинный номер хранится в Excel как число. Установите текстовый формат и восстановите исходный номер — Excel мог округлить его.`);
-    if (/e[+-]\d+/i.test(String(matrix[r]?.[c])) || !cell.z || cell.z === 'General') matrix[r][c] = String(cell.v);
+    const value = restoreIdentifier(matrix[r]?.[c], cell, r + 1);
+    if (value !== matrix[r]?.[c]) matrix[r][c] = value;
   }
   return matrix;
 }
@@ -105,7 +116,7 @@ export function parseMatrix(matrix, { sheet = 'Лист1', file = '', merges = [
   const records = [];
   for (let r = layout.end + 1; r < matrix.length; r++) {
     const values = Array.from({ length: layout.labels.length }, (_, c) => clean(matrix[r]?.[c]));
-    if (!values.some(Boolean) || headerScore(values) >= 8 || /^(итого|всего)(\s|$)/i.test(values[0])) continue;
+    if (!isRegistryDataRow(values)) continue;
     const record = recordFromValues(values, layout, sheet, file, r + 1);
     if (!record.fields.meter && !record.fields.account) continue;
     records.push(record);
